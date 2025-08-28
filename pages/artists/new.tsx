@@ -13,6 +13,7 @@ type EconRow = {
   office_base: 'gross' | 'net'
   office_exempt_type: 'amount' | 'percent'
   office_exempt_value: number
+  brands_mode?: 'office_only'|'split'  // solo aplica en "Acciones con marcas"
 }
 
 const GENERAL_CATEGORIES = [
@@ -24,6 +25,20 @@ const GENERAL_CATEGORIES = [
   'Acciones con marcas',
   'Otras acciones'
 ]
+
+function validateIBAN(iban:string): boolean {
+  const s = iban.replace(/\s+/g,'').toUpperCase()
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{9,30}$/.test(s)) return false
+  const rearr = s.slice(4) + s.slice(0,4)
+  const converted = rearr.replace(/[A-Z]/g, ch => (ch.charCodeAt(0)-55).toString())
+  let remainder = 0
+  for (let i=0;i<converted.length;i+=7) {
+    const part = remainder.toString() + converted.substr(i,7)
+    remainder = parseInt(part,10) % 97
+  }
+  return remainder === 1
+}
+const pctOK = (n:number) => n>=0 && n<=100
 
 export default function NewArtist() {
   // archivos
@@ -49,7 +64,7 @@ export default function NewArtist() {
   // miembros
   const [members, setMembers] = useState<{full_name:string; dni:string}[]>([])
 
-  // GENERAL: condiciones por categoría
+  // GENERAL
   const makeEmptyGeneral = (): EconRow[] => GENERAL_CATEGORIES.map(c => ({
     category: c,
     artist_pct: 0,
@@ -57,14 +72,12 @@ export default function NewArtist() {
     artist_base: 'gross',
     office_base: 'gross',
     office_exempt_type: 'amount',
-    office_exempt_value: 0
+    office_exempt_value: 0,
+    brands_mode: c==='Acciones con marcas' ? 'split' : undefined
   }))
   const [econGeneral, setEconGeneral] = useState<EconRow[]>(makeEmptyGeneral())
 
-  // toggle especial Acciones con marcas (modo actual o solo comisión oficina)
-  const [brandsOfficeOnly, setBrandsOfficeOnly] = useState(false)
-
-  // BOOKING: solo una fila
+  // BOOKING
   const [bookingOfficePct, setBookingOfficePct] = useState(0)
   const [bookingOfficeBase, setBookingOfficeBase] = useState<'gross'|'net'>('gross')
   const [bookingExemptType, setBookingExemptType] = useState<'amount'|'percent'>('amount')
@@ -82,16 +95,13 @@ export default function NewArtist() {
     logo_url?: string|null
     contract_file?: File|null
     contract_url?: string|null
+    is_active: boolean
     econ: ThirdEcon[]
   }
   const [thirds, setThirds] = useState<Third[]>([])
 
-  // auto-relleno fiscal si particular
   useEffect(() => {
-    if (taxType === 'particular') {
-      setTaxName(fullName)
-      setTaxId(dni)
-    }
+    if (taxType === 'particular') { setTaxName(fullName); setTaxId(dni); }
   }, [taxType, fullName, dni])
 
   const addMember = () => setMembers(m => [...m, {full_name:'', dni:''}])
@@ -103,6 +113,7 @@ export default function NewArtist() {
   const addThird = () => setThirds(t => [...t, {
     nick:'', name:'', tax_id:'', email:'', phone:'',
     logo_file:null, logo_url:null, contract_file:null, contract_url:null,
+    is_active: true,
     econ: (contractType==='Booking'
       ? [{ category:'Booking', third_pct:0, third_base:'gross', base_scope:'total', third_exempt_type:'amount', third_exempt_value:0 }]
       : GENERAL_CATEGORIES.map(c=>({category:c, third_pct:0, third_base:'gross', base_scope:'total', third_exempt_type:'amount', third_exempt_value:0}))
@@ -120,7 +131,6 @@ export default function NewArtist() {
     const copy=[...econGeneral]; (copy[i] as any)[k]=v; setEconGeneral(copy)
   }
 
-  // helpers de subida con URL firmada (privado)
   async function uploadAndSign(bucket:string, file:File): Promise<string> {
     const name = `${Date.now()}-${file.name}`
     const { error: upErr } = await supabase.storage.from(bucket).upload(name, file)
@@ -130,17 +140,43 @@ export default function NewArtist() {
     return data.signedUrl
   }
 
+  const validateAll = () => {
+    if (!stageName.trim()) return 'Pon el nombre artístico.'
+    if (!contractFile) return 'Debes adjuntar el contrato del artista.'
+    if (iban && !validateIBAN(iban)) return 'IBAN no válido. Introduce el IBAN completo.'
+    if (contractType==='Booking') {
+      if (!pctOK(bookingOfficePct)) return '% Oficina (Booking) debe estar entre 0 y 100.'
+      if (bookingExemptType==='percent' && !pctOK(bookingExemptValue)) return 'Exento (%) en Booking debe estar entre 0 y 100.'
+    } else {
+      for (const row of econGeneral) {
+        if (row.category==='Conciertos a caché') {
+          if (!pctOK(row.office_pct)) return 'En Caché, % Oficina debe estar entre 0 y 100.'
+          if (row.office_exempt_type==='percent' && !pctOK(row.office_exempt_value)) return 'Exento (%) en Caché debe estar entre 0 y 100.'
+        } else if (row.category==='Royalties Discográficos') {
+          if (!pctOK(row.artist_pct)) return 'En Royalties, % Artista debe estar entre 0 y 100.'
+        } else {
+          if (!pctOK(row.artist_pct)) return `En ${row.category}, % Artista debe estar entre 0 y 100.`
+          if (!pctOK(row.office_pct)) return `En ${row.category}, % Oficina debe estar entre 0 y 100.`
+          if (row.office_exempt_type==='percent' && !pctOK(row.office_exempt_value)) return `En ${row.category}, Exento (%) debe estar entre 0 y 100.`
+        }
+      }
+    }
+    for (const t of thirds) {
+      for (const e of t.econ) {
+        if (!pctOK(e.third_pct)) return 'En Terceros, % debe estar entre 0 y 100.'
+        if (e.third_exempt_type==='percent' && !pctOK(e.third_exempt_value)) return 'En Terceros, Exento (%) debe estar entre 0 y 100.'
+      }
+    }
+    return null
+  }
+
   const onSubmit = async () => {
+    const msg = validateAll()
+    if (msg) return alert(msg)
     try {
-      // validaciones mínimas
-      if (!stageName.trim()) return alert('Pon el nombre artístico.')
-      if (!contractFile) return alert('Debes adjuntar el contrato del artista.')
-
-      // uploads artista
       const photo_url = photoFile ? await uploadAndSign(BUCKET_PHOTOS, photoFile) : null
-      const contract_url = await uploadAndSign(BUCKET_CONTRACTS, contractFile)
+      const contract_url = await uploadAndSign(BUCKET_CONTRACTS, contractFile!)
 
-      // crear artista
       const { data: artist, error: aerr } = await supabase.from('artists').insert({
         stage_name: stageName,
         full_name: fullName || null,
@@ -157,7 +193,6 @@ export default function NewArtist() {
       }).select('*').single()
       if (aerr) throw aerr
 
-      // miembros
       for (const m of members) {
         if (m.full_name) {
           const { error } = await supabase.from('artist_members').insert({ artist_id: artist.id, full_name: m.full_name, dni: m.dni || null })
@@ -165,9 +200,7 @@ export default function NewArtist() {
         }
       }
 
-      // ECONOMÍA
       if (contractType === 'Booking') {
-        // insertar solo 1 fila Booking
         const { error } = await supabase.from('artist_economics').insert({
           artist_id: artist.id,
           category: 'Booking',
@@ -180,30 +213,18 @@ export default function NewArtist() {
         })
         if (error) throw error
       } else {
-        // Ajustes por categoría según nuevos requisitos
         for (const e of econGeneral) {
           const row = { ...e }
-
           if (row.category === 'Conciertos a caché') {
-            // Solo comisión oficina
             row.artist_pct = 0
           }
           if (row.category === 'Royalties Discográficos') {
-            // Solo % artista + base artista
             row.office_pct = 0
             row.office_base = 'gross'
             row.office_exempt_type = 'amount'
             row.office_exempt_value = 0
           }
-          if (row.category === 'Acciones con marcas') {
-            // Modo actual o solo comisión oficina
-            if (brandsOfficeOnly) {
-              row.artist_pct = 0
-              // office_* ya vienen del form
-            }
-          }
-
-          const { error } = await supabase.from('artist_economics').insert({
+          const payload:any = {
             artist_id: artist.id,
             category: row.category,
             artist_pct: row.artist_pct,
@@ -212,18 +233,18 @@ export default function NewArtist() {
             office_base: row.office_base,
             office_exempt_type: row.office_exempt_type,
             office_exempt_value: row.office_exempt_value
-          })
+          }
+          if (row.category==='Acciones con marcas') payload.brands_mode = row.brands_mode
+          const { error } = await supabase.from('artist_economics').insert(payload)
           if (error) throw error
         }
       }
 
-      // TERCEROS
       for (const t of thirds) {
         let logo_url: string | null = null
         let t_contract_url: string | null = null
         if (t.logo_file) logo_url = await uploadAndSign(BUCKET_PHOTOS, t.logo_file)
         if (t.contract_file) t_contract_url = await uploadAndSign(BUCKET_CONTRACTS, t.contract_file)
-
         const { data: tp, error } = await supabase.from('third_parties').insert({
           artist_id: artist.id,
           nick: t.nick,
@@ -232,18 +253,18 @@ export default function NewArtist() {
           email: t.email || null,
           phone: t.phone || null,
           logo_url,
-          contract_url: t_contract_url
+          contract_url: t_contract_url,
+          is_active: t.is_active
         }).select('*').single()
         if (error) throw error
-
         for (const ec of t.econ) {
           const { error: e2 } = await supabase.from('third_party_economics').insert({
             third_party_id: tp.id,
             category: ec.category,
             third_pct: ec.third_pct,
             third_base: ec.third_base,
-            base_scope: ec.base_scope,               // total | office | artist
-            third_exempt_type: ec.third_exempt_type, // amount | percent
+            base_scope: ec.base_scope,
+            third_exempt_type: ec.third_exempt_type,
             third_exempt_value: ec.third_exempt_value
           })
           if (e2) throw e2
@@ -257,27 +278,39 @@ export default function NewArtist() {
     }
   }
 
-  // UI helpers
-  const econUI = (e:EconRow, i:number) => {
-    const label = (s:string)=> <label>{s}</label>
+  const econRowUI = (e:EconRow, i:number) => {
+    const isCache = e.category==='Conciertos a caché'
+    const isRoy = e.category==='Royalties Discográficos'
+    const isBrand = e.category==='Acciones con marcas'
     return (
       <div key={i} className="row" style={{borderTop:'1px solid #1f2937', paddingTop:12, marginTop:12}}>
         <div style={{flex:'1 1 220px'}}><div className="badge">{e.category}</div></div>
 
-        {e.category !== 'Conciertos a caché' && e.category !== 'Acciones con marcas' && e.category !== 'Royalties Discográficos' && (
-          <>
-            <div style={{flex:'1 1 120px'}}>{label('% Artista')}
-              <input type="number" value={e.artist_pct} onChange={v=>handleEconGeneral(i,'artist_pct', Number(v.target.value))}/>
-            </div>
-          </>
+        {isBrand && (
+          <div style={{flex:'1 1 220px'}}>
+            <label>Modo</label>
+            <select value={e.brands_mode ?? 'split'} onChange={v=>handleEconGeneral(i,'brands_mode', v.target.value as any)}>
+              <option value="office_only">Comisión de oficina</option>
+              <option value="split">Reparto porcentajes</option>
+            </select>
+          </div>
         )}
 
-        {e.category === 'Royalties Discográficos' && (
+        {/* % Artista */}
+        {(!isCache && !isRoy && !(isBrand && e.brands_mode==='office_only')) && (
+          <div style={{flex:'1 1 120px'}}>
+            <label>% Artista</label>
+            <input type="number" value={e.artist_pct} onChange={v=>handleEconGeneral(i,'artist_pct', Number(v.target.value))}/>
+          </div>
+        )}
+        {isRoy && (
           <>
-            <div style={{flex:'1 1 120px'}}>{label('% Artista')}
+            <div style={{flex:'1 1 120px'}}>
+              <label>% Artista</label>
               <input type="number" value={e.artist_pct} onChange={v=>handleEconGeneral(i,'artist_pct', Number(v.target.value))}/>
             </div>
-            <div style={{flex:'1 1 140px'}}>{label('Base Artista')}
+            <div style={{flex:'1 1 140px'}}>
+              <label>Base Artista</label>
               <select value={e.artist_base} onChange={v=>handleEconGeneral(i,'artist_base', v.target.value as any)}>
                 <option value="gross">Bruto</option>
                 <option value="net">Neto</option>
@@ -286,18 +319,22 @@ export default function NewArtist() {
           </>
         )}
 
-        {(e.category !== 'Royalties Discográficos') && (
+        {/* % Oficina */}
+        {(!isRoy) && (
           <>
-            <div style={{flex:'1 1 120px'}}>{label('% Oficina')}
+            <div style={{flex:'1 1 120px'}}>
+              <label>% Oficina</label>
               <input type="number" value={e.office_pct} onChange={v=>handleEconGeneral(i,'office_pct', Number(v.target.value))}/>
             </div>
-            <div style={{flex:'1 1 140px'}}>{label('Base Oficina')}
+            <div style={{flex:'1 1 140px'}}>
+              <label>Base Oficina</label>
               <select value={e.office_base} onChange={v=>handleEconGeneral(i,'office_base', v.target.value as any)}>
                 <option value="gross">Bruto</option>
                 <option value="net">Neto</option>
               </select>
             </div>
-            <div style={{flex:'1 1 220px'}}>{label('Exento (Oficina)')}
+            <div style={{flex:'1 1 220px'}}>
+              <label>Exento (Oficina)</label>
               <div className="row" style={{gap:8}}>
                 <select style={{flex:'0 0 120px'}} value={e.office_exempt_type} onChange={v=>handleEconGeneral(i,'office_exempt_type', v.target.value as any)}>
                   <option value="amount">Importe</option>
@@ -309,10 +346,10 @@ export default function NewArtist() {
           </>
         )}
 
-        {/* Base artista sólo aplica si no es caché/marcas en modo oficina y no es booking */}
-        {(e.category !== 'Conciertos a caché' && !(e.category==='Acciones con marcas' && brandsOfficeOnly) && e.category!=='Royalties Discográficos') && (
+        {/* Base artista (cuando aplica) */}
+        {(!isCache && !isRoy && !(isBrand && e.brands_mode==='office_only')) && (
           <div style={{flex:'1 1 140px'}}>
-            {label('Base Artista')}
+            <label>Base Artista</label>
             <select value={e.artist_base} onChange={v=>handleEconGeneral(i,'artist_base', v.target.value as any)}>
               <option value="gross">Bruto</option>
               <option value="net">Neto</option>
@@ -341,11 +378,11 @@ export default function NewArtist() {
           </div>
           <div style={{flex:'1 1 220px'}}>
             <label>Nombre completo</label>
-            <input value={fullName} onChange={e=>setFullName(e.target.value)} placeholder="Nombre y apellidos"/>
+            <input value={fullName} onChange={e=>setFullName(e.target.value)}/>
           </div>
           <div style={{flex:'1 1 120px'}}>
             <label>DNI</label>
-            <input value={dni} onChange={e=>setDni(e.target.value)} placeholder="DNI/NIF"/>
+            <input value={dni} onChange={e=>setDni(e.target.value)}/>
           </div>
           <div style={{flex:'1 1 160px'}}>
             <label>Fecha de nacimiento</label>
@@ -353,12 +390,7 @@ export default function NewArtist() {
           </div>
           <div style={{flex:'1 1 160px'}}>
             <label>Tipo de contrato</label>
-            <select value={contractType} onChange={e=>{
-              const v = e.target.value as 'General'|'Booking'
-              setContractType(v)
-              // reinicia configuración de terceros según contrato
-              setThirds([])
-            }}>
+            <select value={contractType} onChange={e=>{ setContractType(e.target.value as any); setThirds([]); }}>
               <option value="General">General</option>
               <option value="Booking">Booking</option>
             </select>
@@ -390,7 +422,7 @@ export default function NewArtist() {
           </div>
           <div style={{flex:'1 1 260px'}}>
             <label>IBAN</label>
-            <input value={iban} onChange={e=>setIban(e.target.value)} placeholder="ES.."/>
+            <input value={iban} onChange={e=>setIban(e.target.value)} placeholder="ES00 0000 0000 0000 0000 0000"/>
           </div>
         </div>
       </div>
@@ -428,44 +460,29 @@ export default function NewArtist() {
           <h2>Condiciones — Booking</h2>
           <div className="row">
             <div style={{flex:'1 1 140px'}}><label>% Oficina</label>
-              <input type="number" value={bookingOfficePct} onChange={e=>setBookingOfficePct(Number(e.target.value))}/>
-            </div>
+              <input type="number" value={bookingOfficePct} onChange={e=>setBookingOfficePct(Number(e.target.value))}/></div>
             <div style={{flex:'1 1 160px'}}><label>Base</label>
               <select value={bookingOfficeBase} onChange={e=>setBookingOfficeBase(e.target.value as any)}>
-                <option value="gross">Bruto</option>
-                <option value="net">Neto</option>
-              </select>
-            </div>
+                <option value="gross">Bruto</option><option value="net">Neto</option>
+              </select></div>
             <div style={{flex:'1 1 260px'}}><label>Exento comisión</label>
               <div className="row" style={{gap:8}}>
                 <select style={{flex:'0 0 120px'}} value={bookingExemptType} onChange={e=>setBookingExemptType(e.target.value as any)}>
-                  <option value="amount">Importe</option>
-                  <option value="percent">%</option>
+                  <option value="amount">Importe</option><option value="percent">%</option>
                 </select>
                 <input style={{flex:'1 1 auto'}} type="number" value={bookingExemptValue} onChange={e=>setBookingExemptValue(Number(e.target.value))}/>
-              </div>
-            </div>
+              </div></div>
           </div>
         </div>
       ) : (
         <div className="card">
           <h2>Condiciones — General</h2>
-
-          {/* toggle para Acciones con marcas */}
-          <div className="row" style={{marginBottom:8}}>
-            <div className="badge">Acciones con marcas: modo</div>
-            <select value={brandsOfficeOnly ? 'solo_oficina' : 'modo_actual'} onChange={e=>setBrandsOfficeOnly(e.target.value==='solo_oficina')}>
-              <option value="modo_actual">Modo actual (tabla completa)</option>
-              <option value="solo_oficina">Solo comisión de oficina</option>
-            </select>
-          </div>
-
-          {econGeneral.map((e, i)=> econUI(e, i))}
-          <small>Puedes dejar % en 0 si no aplica. En "Conciertos a caché", solo % Oficina. En "Royalties Discográficos", solo % Artista + base.</small>
+          {econGeneral.map((e, i)=> econRowUI(e, i))}
+          <small>“Caché”: solo % Oficina. “Royalties”: solo % Artista + base. “Marcas”: elige modo en la fila.</small>
         </div>
       )}
 
-      <div className="card">
+      <div className="card" id="thirds">
         <h2>Terceros</h2>
         <button onClick={addThird}>+ Añadir tercero</button>
         {thirds.map((t, ti)=>(
@@ -481,6 +498,10 @@ export default function NewArtist() {
                 <input value={t.email} onChange={e=>updateThirdField(ti,'email', e.target.value)}/></div>
               <div style={{flex:'1 1 160px'}}><label>Teléfono</label>
                 <input value={t.phone} onChange={e=>updateThirdField(ti,'phone', e.target.value)}/></div>
+              <div style={{flex:'1 1 200px'}}><label>Activo</label>
+                <select value={t.is_active ? 'sí':'no'} onChange={e=>updateThirdField(ti,'is_active', e.target.value==='sí')}>
+                  <option>sí</option><option>no</option>
+                </select></div>
               <div style={{flex:'1 1 220px'}}><label>Logo / Foto</label>
                 <input type="file" accept="image/*" onChange={e=>updateThirdField(ti,'logo_file', e.target.files?.[0] ?? null)}/></div>
               <div style={{flex:'1 1 220px'}}><label>Contrato (PDF/imagen)</label>
@@ -496,8 +517,7 @@ export default function NewArtist() {
                     <input type="number" value={e.third_pct} onChange={v=>updateThirdEcon(ti,ci,'third_pct', Number(v.target.value))}/></div>
                   <div style={{flex:'1 1 140px'}}><label>Base</label>
                     <select value={e.third_base} onChange={v=>updateThirdEcon(ti,ci,'third_base', v.target.value as any)}>
-                      <option value="gross">Bruto</option>
-                      <option value="net">Neto</option>
+                      <option value="gross">Bruto</option><option value="net">Neto</option>
                     </select></div>
                   <div style={{flex:'1 1 180px'}}><label>Ámbito base</label>
                     <select value={e.base_scope} onChange={v=>updateThirdEcon(ti,ci,'base_scope', v.target.value as any)}>
@@ -508,8 +528,7 @@ export default function NewArtist() {
                   <div style={{flex:'1 1 240px'}}><label>Exento</label>
                     <div className="row" style={{gap:8}}>
                       <select style={{flex:'0 0 120px'}} value={e.third_exempt_type} onChange={v=>updateThirdEcon(ti,ci,'third_exempt_type', v.target.value as any)}>
-                        <option value="amount">Importe</option>
-                        <option value="percent">%</option>
+                        <option value="amount">Importe</option><option value="percent">%</option>
                       </select>
                       <input style={{flex:'1 1 auto'}} type="number" value={e.third_exempt_value} onChange={v=>updateThirdEcon(ti,ci,'third_exempt_value', Number(v.target.value))}/>
                     </div>
