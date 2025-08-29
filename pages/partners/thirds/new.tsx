@@ -1,184 +1,342 @@
-import { useState } from 'react'
-import Layout from '../../../components/Layout'
-import Button from '../../../components/ui/Button'
+import { useEffect, useMemo, useState } from 'react'
+import Image from 'next/image'
+import { useRouter } from 'next/router'
 import { supabase } from '../../../lib/supabaseClient'
+import Layout from '../../../components/Layout'
 
-const BUCKET_PHOTOS = 'artist-photos'
+const BUCKET_LOGOS = 'artist-photos'
 
-type RefPerson = { full_name: string; role: string; email: string; phone: string }
+type Kind = 'third'
+type PersonaRef = { full_name: string; role: string; email: string; phone: string }
 
-async function uploadAndSign(bucket:string, file:File) {
-  const name = `${Date.now()}-${file.name}`
-  const { error: upErr } = await supabase.storage.from(bucket).upload(name, file)
-  if (upErr) throw upErr
-  const { data, error: signErr } = await supabase.storage.from(bucket).createSignedUrl(name, 60*60*24*365)
-  if (signErr || !data) throw signErr || new Error('No signed URL')
-  return data.signedUrl
+type Mode = 'particular' | 'empresa'
+
+type SearchHit = {
+  id: string
+  kind: 'third' | 'provider'
+  nick: string | null
+  name: string | null
+  logo_url: string | null
+  tax_id: string | null
+  email: string | null
 }
 
 export default function NewThird() {
-  const [kind] = useState<'third'>('third')
-  const [type, setType] = useState<'particular'|'empresa'>('particular')
+  const router = useRouter()
 
-  const [logoFile, setLogoFile] = useState<File|null>(null)
+  // Paso 1: tipo fiscal
+  const [mode, setMode] = useState<Mode>('particular')
+
+  // Cabecera
+  const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [logoPreview, setLogoPreview] = useState<string | null>(null)
   const [nick, setNick] = useState('')
 
-  // particulares
-  const [fullName, setFullName] = useState('')
-  const [dni, setDni] = useState('')
+  // Particular
+  const [pFullName, setPFullName] = useState('')
+  const [pDni, setPDni] = useState('')
 
-  // empresa
-  const [fiscalName, setFiscalName] = useState('')
-  const [taxId, setTaxId] = useState('')
+  // Empresa (fiscal)
+  const [eCompanyName, setECompanyName] = useState('')
+  const [eCif, setECif] = useState('')
 
-  // contacto
+  // Contacto (común)
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
 
-  // personas referencia (solo empresa)
-  const [refs, setRefs] = useState<RefPerson[]>([])
+  // Empresa → personas de referencia (múltiples)
+  const [persons, setPersons] = useState<PersonaRef[]>([])
 
-  const addRef = ()=> setRefs(r=>[...r, { full_name:'', role:'', email:'', phone:'' }])
-  const updateRef = (i:number, k:keyof RefPerson, v:string) => { const c=[...refs]; (c[i] as any)[k]=v; setRefs(c) }
-  const removeRef = (i:number) => setRefs(r=>r.filter((_,idx)=>idx!==i))
+  // Autocompletar / duplicados
+  const [q, setQ] = useState('')
+  const [hits, setHits] = useState<SearchHit[]>([])
+  const [checkingDup, setCheckingDup] = useState(false)
 
-  // validación de duplicados: nick/name, taxId, email
-  const checkDuplicate = async (): Promise<string | null> => {
-    const valueNick = nick.trim()
-    const valueName = type==='particular' ? fullName.trim() : fiscalName.trim()
-    const valueTax = (type==='particular' ? dni.trim() : taxId.trim())
-    const fields = [valueNick, valueName, valueTax, email.trim()].filter(Boolean).map(v => `nick.ilike.${v},name.ilike.${v},tax_id.ilike.${v},email.ilike.${v}`).join(',')
+  useEffect(() => {
+    if (logoFile) setLogoPreview(URL.createObjectURL(logoFile))
+    else setLogoPreview(null)
+  }, [logoFile])
 
-    if (!fields) return null
-    const { data } = await supabase
-      .from('third_parties')
-      .select('id, nick, name')
-      .eq('kind', kind)
-      .or(fields)
-      .limit(1)
-    if (data && data[0]) {
-      return `Ya existe: ${data[0].nick || data[0].name}. Selecciónalo en la sección Terceros.`
+  // Autocompletar por nick / name
+  useEffect(() => {
+    const term = q.trim()
+    if (!term) { setHits([]); return }
+    const run = async () => {
+      const { data, error } = await supabase
+        .from('third_parties')
+        .select('id,kind,nick,name,logo_url,tax_id,email')
+        .or(`nick.ilike.%${term}%,name.ilike.%${term}%`)
+        .order('nick', { ascending: true })
+        .limit(8)
+      if (!error) setHits((data || []) as SearchHit[])
     }
+    const t = setTimeout(run, 200)
+    return () => clearTimeout(t)
+  }, [q])
+
+  const title = useMemo(() => {
+    if (mode === 'particular') return pFullName || nick || 'Nuevo tercero'
+    return eCompanyName || nick || 'Nuevo tercero'
+  }, [mode, pFullName, eCompanyName, nick])
+
+  const nameForDB = useMemo(() => {
+    return mode === 'particular' ? (pFullName || nick) : (eCompanyName || nick)
+  }, [mode, pFullName, eCompanyName, nick])
+
+  const taxIdForDB = useMemo(() => {
+    return mode === 'particular' ? (pDni || null) : (eCif || null)
+  }, [mode, pDni, eCif])
+
+  async function uploadAndSign(bucket: string, file: File) {
+    const safeName = file.name.normalize('NFC')
+    const name = `${Date.now()}-${safeName}`
+    const { error: upErr } = await supabase.storage.from(bucket).upload(name, file)
+    if (upErr) throw upErr
+    const { data, error: signErr } = await supabase.storage.from(bucket).createSignedUrl(name, 60 * 60 * 24 * 365)
+    if (signErr || !data) throw signErr || new Error('No signed URL')
+    return data.signedUrl
+  }
+
+  const validate = () => {
+    if (!nick.trim()) return 'Pon un Nick (alias corto).'
+    if (!nameForDB?.trim()) return mode === 'particular' ? 'Pon el nombre completo.' : 'Pon el nombre de la empresa.'
+    if (!email.trim() && !phone.trim()) return 'Pon al menos un dato de contacto (email o teléfono).'
     return null
   }
 
-  const onSave = async ()=>{
-    const dup = await checkDuplicate()
-    if (dup) { alert(dup); return }
-    try {
-      let logo_url: string | null = null
-      if (logoFile) logo_url = await uploadAndSign(BUCKET_PHOTOS, logoFile)
+  const findDuplicates = async () => {
+    const or: string[] = []
+    const term = (nameForDB || '').trim()
+    if (term) or.push(`nick.ilike.${term}`, `name.ilike.${term}`)
+    const filters: string[] = []
+    if (taxIdForDB) filters.push(`tax_id.eq.${taxIdForDB}`)
+    if (email) filters.push(`email.ilike.${email}`)
 
-      const payload: any = {
-        kind,
-        logo_url,
-        nick: nick || null,
-        name: type==='particular' ? (fullName || null) : (fiscalName || null),
-        tax_id: type==='particular' ? (dni || null) : (taxId || null),
-        email: email || null,
-        phone: phone || null,
-        is_active: true
+    let query = supabase.from('third_parties').select('id,kind,nick,name,logo_url,tax_id,email').eq('kind', 'third')
+    if (or.length) query = query.or(or.join(','))
+    if (filters.length) {
+      for (const f of filters) query = query.or(f)
+    }
+    const { data, error } = await query.limit(5)
+    if (error) throw error
+
+    const list = (data || []).filter(Boolean)
+    const matches = list.filter(row => {
+      const sameName = term && ((row.nick || '').toLowerCase() === term.toLowerCase() || (row.name || '').toLowerCase() === term.toLowerCase())
+      const sameTax = taxIdForDB && row.tax_id && row.tax_id.toLowerCase() === taxIdForDB.toLowerCase()
+      const sameEmail = email && row.email && row.email.toLowerCase() === email.toLowerCase()
+      return sameName || sameTax || sameEmail
+    })
+    return matches
+  }
+
+  const onSubmit = async () => {
+    const err = validate()
+    if (err) return alert(err)
+    try {
+      setCheckingDup(true)
+      const dups = await findDuplicates()
+      setCheckingDup(false)
+      if (dups.length > 0) {
+        const first = dups[0]
+        const label = first.nick || first.name || 'el existente'
+        const go = confirm(`Ya existe un tercero con datos coincidentes: "${label}".\n\n¿Quieres abrir su ficha en lugar de crear duplicado?`)
+        if (go) {
+          return router.push(`/partners/thirds/${first.id}`)
+        } else {
+          return alert('No se permite crear duplicados. Ajusta los datos o selecciona el existente.')
+        }
       }
 
-      const { data: tp, error } = await supabase.from('third_parties').insert(payload).select('*').single()
-      if (error) throw error
+      let logo_url: string | null = null
+      if (logoFile) logo_url = await uploadAndSign(BUCKET_LOGOS, logoFile)
 
-      // guardar personas de referencia como "third_party_contacts" (si tienes esa tabla), si no, omítelo:
-      for (const r of refs) {
-        if (!r.full_name) continue
-        await supabase.from('third_party_contacts').insert({
-          third_party_id: tp.id,
-          full_name: r.full_name, role: r.role || null, email: r.email || null, phone: r.phone || null
+      const { data: inserted, error: insErr } = await supabase
+        .from('third_parties')
+        .insert({
+          kind: 'third' as Kind,
+          nick: nick || null,
+          name: nameForDB || null,
+          tax_id: taxIdForDB || null,
+          email: email || null,
+          phone: phone || null,
+          logo_url,
+          is_active: true
         })
+        .select('id')
+        .single()
+      if (insErr) throw insErr
+
+      if (mode === 'empresa' && persons.length > 0) {
+        try {
+          for (const p of persons) {
+            if ((p.full_name || '').trim()) {
+              await supabase.from('third_party_contacts').insert({
+                third_party_id: inserted.id,
+                full_name: p.full_name,
+                role: p.role || null,
+                email: p.email || null,
+                phone: p.phone || null
+              })
+            }
+          }
+        } catch {
+          console.warn('Tabla third_party_contacts no disponible; contactos no guardados.')
+        }
       }
 
       alert('Tercero creado.')
-      window.location.href = `/partners/thirds/${tp.id}`
-    } catch(e:any) {
-      alert(e.message || 'Error guardando')
+      router.push(`/partners/thirds/${inserted.id}`)
+    } catch (e: any) {
+      setCheckingDup(false)
+      alert(e.message || 'Error al crear tercero')
     }
   }
 
+  // Helpers UI
+  const addPerson = () => setPersons(prev => [...prev, { full_name: '', role: '', email: '', phone: '' }])
+  const updPerson = (i: number, k: keyof PersonaRef, v: string) => {
+    const c = [...persons]; (c[i] as any)[k] = v; setPersons(c)
+  }
+  const rmPerson = (i: number) => setPersons(prev => prev.filter((_, idx) => idx !== i))
+
   return (
     <Layout>
+      <h1>Nuevo tercero</h1>
+
+      {/* Autocompletar / Buscar existentes por Nick/Nombre */}
       <div className="module">
-        <h1>Nuevo tercero</h1>
-        <div className="row" style={{ gap: 12 }}>
-          <div style={{ flex: '0 0 220px' }}>
-            <label>Foto/Logo</label>
-            <input type="file" accept="image/*" onChange={e=>setLogoFile(e.target.files?.[0] ?? null)}/>
-          </div>
-          <div style={{ flex: '1 1 320px' }}>
-            <label>Nick</label>
-            <input value={nick} onChange={e=>setNick(e.target.value)} placeholder="Nombre corto/alias" />
-          </div>
+        <h2>Buscar existente</h2>
+        <div className="row" style={{ gap: 8 }}>
+          <input
+            placeholder="Buscar por Nick o Nombre…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
         </div>
+        {hits.length > 0 && (
+          <div className="card" style={{ marginTop: 8 }}>
+            {hits.map((h) => {
+              const label = h.nick || h.name || '(sin nombre)'
+              return (
+                <a
+                  key={h.id}
+                  className="row"
+                  style={{ alignItems: 'center', gap: 12, padding: '6px 0' }}
+                  href={`/partners/${h.kind === 'provider' ? 'providers' : 'thirds'}/${h.id}`}
+                >
+                  <div style={{ width: 32, height: 32, position: 'relative', borderRadius: 6, overflow: 'hidden', background: '#f3f4f6' }}>
+                    {h.logo_url ? <Image src={h.logo_url} alt={label} fill style={{ objectFit: 'cover' }} /> : null}
+                  </div>
+                  <div style={{ fontWeight: 600 }}>{label}</div>
+                  <div style={{ color: '#6b7280', fontSize: 12 }}>{h.kind === 'provider' ? 'Proveedor' : 'Tercero'}</div>
+                </a>
+              )
+            })}
+          </div>
+        )}
       </div>
 
+      {/* Tipo fiscal */}
       <div className="module">
         <h2>Tipo</h2>
         <div className="row" style={{ gap: 12 }}>
-          <select value={type} onChange={e=>setType(e.target.value as any)}>
-            <option value="particular">Particular</option>
-            <option value="empresa">Empresa</option>
-          </select>
+          <label><input type="radio" checked={mode === 'particular'} onChange={() => setMode('particular')} /> Particular</label>
+          <label><input type="radio" checked={mode === 'empresa'} onChange={() => setMode('empresa')} /> Empresa</label>
         </div>
       </div>
 
-      {type === 'particular' ? (
+      {/* Cabecera: Logo + Nick */}
+      <div className="module">
+        <h2>Cabecera</h2>
+        <div className="row" style={{ gap: 12, alignItems: 'center' }}>
+          <div style={{ width: 88, height: 88, position: 'relative', borderRadius: 12, overflow: 'hidden', background: '#f3f4f6' }}>
+            {logoPreview ? <Image src={logoPreview} alt="Logo" fill style={{ objectFit: 'cover' }} /> : null}
+          </div>
+          <div>
+            <label>Logo / Foto</label>
+            <input type="file" accept="image/*" onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)} />
+          </div>
+          <div style={{ flex: '1 1 260px' }}>
+            <label>Nick (alias)</label>
+            <input value={nick} onChange={(e) => setNick(e.target.value)} placeholder="Ej. PromoMax / JuanPérez" />
+          </div>
+        </div>
+      </div>
+
+      {/* Particular → Datos personales */}
+      {mode === 'particular' && (
         <div className="module">
           <h2>Datos personales</h2>
           <div className="row" style={{ gap: 12 }}>
-            <div style={{ flex: '1 1 320px' }}>
+            <div style={{ flex: '1 1 340px' }}>
               <label>Nombre completo</label>
-              <input value={fullName} onChange={e=>setFullName(e.target.value)} />
+              <input value={pFullName} onChange={(e) => setPFullName(e.target.value)} />
             </div>
-            <div style={{ flex: '1 1 200px' }}>
-              <label>DNI/NIF</label>
-              <input value={dni} onChange={e=>setDni(e.target.value)} />
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="module">
-          <h2>Datos fiscales</h2>
-          <div className="row" style={{ gap: 12 }}>
-            <div style={{ flex: '1 1 320px' }}>
-              <label>Nombre fiscal (empresa)</label>
-              <input value={fiscalName} onChange={e=>setFiscalName(e.target.value)} />
-            </div>
-            <div style={{ flex: '1 1 200px' }}>
-              <label>NIF/CIF</label>
-              <input value={taxId} onChange={e=>setTaxId(e.target.value)} />
+            <div style={{ flex: '1 1 180px' }}>
+              <label>DNI / NIF</label>
+              <input value={pDni} onChange={(e) => setPDni(e.target.value)} />
             </div>
           </div>
         </div>
       )}
 
+      {/* Empresa → Datos fiscales */}
+      {mode === 'empresa' && (
+        <div className="module">
+          <h2>Datos fiscales</h2>
+          <div className="row" style={{ gap: 12 }}>
+            <div style={{ flex: '1 1 340px' }}>
+              <label>Nombre fiscal / Empresa</label>
+              <input value={eCompanyName} onChange={(e) => setECompanyName(e.target.value)} />
+            </div>
+            <div style={{ flex: '1 1 180px' }}>
+              <label>NIF / CIF</label>
+              <input value={eCif} onChange={(e) => setECif(e.target.value)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Contacto (común) + Personas de referencia si empresa */}
       <div className="module">
         <h2>Contacto</h2>
         <div className="row" style={{ gap: 12 }}>
           <div style={{ flex: '1 1 260px' }}>
             <label>Email</label>
-            <input value={email} onChange={e=>setEmail(e.target.value)} />
+            <input value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
           <div style={{ flex: '1 1 200px' }}>
             <label>Teléfono</label>
-            <input value={phone} onChange={e=>setPhone(e.target.value)} />
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} />
           </div>
         </div>
 
-        {type === 'empresa' && (
+        {mode === 'empresa' && (
           <div style={{ marginTop: 12 }}>
             <h3 style={{ fontSize: 16, marginBottom: 8 }}>Personas de referencia</h3>
-            <Button tone="ghost" icon="plus" onClick={addRef}>Añadir persona</Button>
-            {refs.map((r, i)=>(
+            <button onClick={addPerson}>+ Añadir persona</button>
+            {persons.map((p, i) => (
               <div key={i} className="row" style={{ gap: 8, marginTop: 8 }}>
-                <input placeholder="Nombre completo" value={r.full_name} onChange={e=>updateRef(i,'full_name',e.target.value)}/>
-                <input placeholder="Cargo" value={r.role} onChange={e=>updateRef(i,'role',e.target.value)}/>
-                <input placeholder="Email" value={r.email} onChange={e=>updateRef(i,'email',e.target.value)}/>
-                <input placeholder="Teléfono" value={r.phone} onChange={e=>updateRef(i,'phone',e.target.value)}/>
-                <Button tone="ghost" icon="trash" onClick={()=>removeRef(i)} />
+                <div style={{ flex: '1 1 240px' }}>
+                  <label>Nombre completo</label>
+                  <input value={p.full_name} onChange={(e) => updPerson(i, 'full_name', e.target.value)} />
+                </div>
+                <div style={{ flex: '1 1 200px' }}>
+                  <label>Cargo</label>
+                  <input value={p.role} onChange={(e) => updPerson(i, 'role', e.target.value)} />
+                </div>
+                <div style={{ flex: '1 1 240px' }}>
+                  <label>Email</label>
+                  <input value={p.email} onChange={(e) => updPerson(i, 'email', e.target.value)} />
+                </div>
+                <div style={{ flex: '1 1 180px' }}>
+                  <label>Teléfono</label>
+                  <input value={p.phone} onChange={(e) => updPerson(i, 'phone', e.target.value)} />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                  <button onClick={() => rmPerson(i)}>Eliminar</button>
+                </div>
               </div>
             ))}
           </div>
@@ -186,7 +344,9 @@ export default function NewThird() {
       </div>
 
       <div className="module">
-        <Button icon="save" onClick={onSave}>Guardar</Button>
+        <button onClick={onSubmit} disabled={checkingDup}>
+          {checkingDup ? 'Comprobando…' : 'Crear tercero'}
+        </button>
       </div>
     </Layout>
   )
