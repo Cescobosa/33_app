@@ -15,12 +15,14 @@ export default function ThirdsIndex() {
   const [q, setQ] = useState('');
 
   async function load() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('third_parties')
-      .select('id, nick, name, logo_url, is_active')
-      .eq('kind','third')
+      .select('id, nick, name, logo_url, is_active, kind')
       .order('nick', { ascending: true });
-    setList((data||[]) as any);
+    if (error) { alert(error.message); return; }
+    // Acepta antiguos registros con kind null como terceros
+    const rows = (data || []).filter((r:any)=> (r.kind ?? 'third') === 'third');
+    setList(rows as any);
   }
 
   useEffect(()=>{ load(); }, []);
@@ -43,7 +45,7 @@ export default function ThirdsIndex() {
           <div style={{ flex:'1 1 420px' }}>
             <input placeholder="Buscar por nick o nombre…" value={q} onChange={e=>setQ(e.target.value)} />
           </div>
-          {/* Sin botón de crear: los terceros se crean desde la ficha de artista */}
+          {/* Sin botón de crear: terceros se crean desde la ficha del artista */}
         </div>
       </div>
 
