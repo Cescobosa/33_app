@@ -1,14 +1,9 @@
 import { useEffect, useState } from 'react'
-import Image from 'next/image'
 import { supabase } from '../../lib/supabaseClient'
 import Layout from '../../components/Layout'
+import Button from '../../components/ui/Button'
 
-type Artist = {
-  id: string
-  stage_name: string
-  photo_url: string | null
-  is_archived?: boolean | null
-}
+type Artist = { id: string; stage_name: string; photo_url: string | null; is_archived?: boolean | null }
 
 export default function ArtistsList() {
   const [items, setItems] = useState<Artist[]>([])
@@ -18,7 +13,6 @@ export default function ArtistsList() {
   useEffect(() => {
     (async () => {
       setLoading(true)
-      setError(null)
       const { data, error } = await supabase
         .from('artists')
         .select('id, stage_name, photo_url, is_archived')
@@ -31,67 +25,23 @@ export default function ArtistsList() {
 
   return (
     <Layout>
-      <h1>Artistas</h1>
+      <div className="row" style={{ alignItems:'center', justifyContent:'space-between', marginBottom: 10 }}>
+        <h1>Artistas</h1>
+        <Button as="a" href="/artists/new" icon="plus">Crear artista</Button>
+      </div>
 
       {loading && <div className="module">Cargando…</div>}
       {error && <div className="module" style={{color:'#d42842'}}>Error: {error}</div>}
 
       {!loading && !error && (
-        <>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-              gap: 16,
-            }}
-          >
-            {items.map((a) => (
-              <a
-                key={a.id}
-                href={`/artists/${a.id}`}
-                className="card"
-                style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12 }}
-              >
-                <div
-                  style={{
-                    width: 56,
-                    height: 56,
-                    position: 'relative',
-                    borderRadius: 12,
-                    overflow: 'hidden',
-                    background: '#f3f4f6',
-                    flex: '0 0 auto',
-                  }}
-                >
-                  {a.photo_url ? (
-                    <Image src={a.photo_url} alt={a.stage_name} fill style={{ objectFit: 'cover' }} />
-                  ) : (
-                    <div
-                      style={{
-                        width: '100%',
-                        height: '100%',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: '#9ca3af',
-                        fontSize: 12,
-                      }}
-                    >
-                      Sin foto
-                    </div>
-                  )}
-                </div>
-                <div style={{ fontWeight: 600 }}>{a.stage_name}</div>
-              </a>
-            ))}
-          </div>
-
-          <div style={{ marginTop: 16 }}>
-            <a className="btn" href="/artists/new">
-              + Crear artista
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))', gap:16 }}>
+          {items.map(a => (
+            <a key={a.id} href={`/artists/${a.id}`} className="card" style={{ display:'flex', alignItems:'center', gap:12, padding:12 }}>
+              <img src={a.photo_url || ''} alt="" style={{ width:56, height:56, borderRadius:12, objectFit:'cover', background:'#f3f4f6' }}/>
+              <div style={{ fontWeight:600 }}>{a.stage_name}</div>
             </a>
-          </div>
-        </>
+          ))}
+        </div>
       )}
     </Layout>
   )
