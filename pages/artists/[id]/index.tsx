@@ -135,36 +135,80 @@ export default function ArtistShow() {
     await loadAll();
   }
 
+  // BORRADO DEFINITIVO: cada operación se envuelve en un async IIFE para que steps sea Promise[]
   async function hardDelete() {
     if (!artist) return;
     const sure = prompt('Escribe ELIMINAR para borrar definitivamente este artista');
     if (sure !== 'ELIMINAR') return;
 
-    // Borrado con chequeo de errores (por si RLS bloquea)
-    const steps: Array<Promise<any>> = [];
-    steps.push(supabase.from('artist_contracts').delete().eq('artist_id', artist.id));
-    steps.push((async ()=>{
-      const { data: tps, error: tpsErr } = await supabase.from('third_parties').select('id').eq('artist_id', artist.id);
-      if (tpsErr) throw tpsErr;
-      for (const tp of (tps||[])) {
-        const d1 = await supabase.from('third_party_contracts').delete().eq('third_party_id', tp.id);
-        if (d1.error) throw d1.error;
-        const d2 = await supabase.from('third_party_economics').delete().eq('third_party_id', tp.id);
-        if (d2.error) throw d2.error;
-      }
-      const d3 = await supabase.from('third_parties').delete().eq('artist_id', artist.id);
-      if (d3.error) throw d3.error;
+    const steps: Promise<any>[] = [];
+
+    // 1) Contratos del artista
+    steps.push((async () => {
+      const { error } = await supabase
+        .from('artist_contracts')
+        .delete()
+        .eq('artist_id', artist.id);
+      if (error) throw error;
     })());
-    steps.push(supabase.from('artist_economics').delete().eq('artist_id', artist.id));
-    steps.push(supabase.from('artist_members').delete().eq('artist_id', artist.id));
+
+    // 2) Econ y contratos de terceros + terceros
+    steps.push((async () => {
+      const { data: tps, error: tpsErr } = await supabase
+        .from('third_parties')
+        .select('id')
+        .eq('artist_id', artist.id);
+      if (tpsErr) throw tpsErr;
+
+      for (const tp of (tps || [])) {
+        const { error: e1 } = await supabase
+          .from('third_party_contracts')
+          .delete()
+          .eq('third_party_id', tp.id);
+        if (e1) throw e1;
+
+        const { error: e2 } = await supabase
+          .from('third_party_economics')
+          .delete()
+          .eq('third_party_id', tp.id);
+        if (e2) throw e2;
+      }
+
+      const { error: delTpErr } = await supabase
+        .from('third_parties')
+        .delete()
+        .eq('artist_id', artist.id);
+      if (delTpErr) throw delTpErr;
+    })());
+
+    // 3) Econ del artista
+    steps.push((async () => {
+      const { error } = await supabase
+        .from('artist_economics')
+        .delete()
+        .eq('artist_id', artist.id);
+      if (error) throw error;
+    })());
+
+    // 4) Miembros del artista
+    steps.push((async () => {
+      const { error } = await supabase
+        .from('artist_members')
+        .delete()
+        .eq('artist_id', artist.id);
+      if (error) throw error;
+    })());
 
     try {
-      for (const p of steps) {
-        const r = await p;
-        if (r?.error) throw r.error;
-      }
-      const { error: delA } = await supabase.from('artists').delete().eq('id', artist.id);
+      await Promise.all(steps);
+
+      // 5) Finalmente, borrar el artista
+      const { error: delA } = await supabase
+        .from('artists')
+        .delete()
+        .eq('id', artist.id);
       if (delA) throw delA;
+
       window.location.href = '/artists/archived';
     } catch (e:any) {
       alert('No se pudo borrar: ' + (e.message || e));
