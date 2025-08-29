@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+// pages/artists/[id]/index.tsx
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { supabase } from '../../../lib/supabaseClient';
 import Layout from '../../../components/Layout';
@@ -21,6 +22,7 @@ type Artist = {
   tax_id: string | null;
   tax_address: string | null;
   iban: string | null;
+  archived?: boolean | null; // <- para mostrar botón archivar/recuperar
 };
 
 type Member = {
@@ -97,7 +99,8 @@ export default function ArtistShow() {
 
   async function loadAll() {
     if (!id) return;
-    const { data: a } = await supabase.from('artists').select('*').eq('id', id).single();
+    const { data: a, error: aErr } = await supabase.from('artists').select('*').eq('id', id).single();
+    if (aErr) { alert(aErr.message); return; }
     setArtist(a as any);
 
     // miembros únicos (si el backend duplicó por algún motivo, los deduplicamos)
@@ -204,20 +207,44 @@ export default function ArtistShow() {
     }
   }
 
+  // === NUEVO: archivar / recuperar ===
+  async function setArchived(value: boolean) {
+    if (!artist) return;
+    const { error } = await supabase.from('artists').update({ archived: value }).eq('id', artist.id);
+    if (error) return alert(error.message);
+    // Navega a la lista correspondiente
+    if (value) {
+      router.push('/artists'); // lo archivamos y volvemos a la lista (puedes cambiar a /artists/archived si quieres)
+    } else {
+      await loadAll(); // recuperado, nos quedamos en la ficha
+    }
+  }
+
   if (!artist) return <Layout><div className="module">Cargando…</div></Layout>;
 
   return (
     <Layout>
-      {/* Cabecera simple: foto + nombre artístico */}
-      <div className="module" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        <div style={{ width: 96, height: 96, borderRadius: 16, overflow: 'hidden', background: '#f3f4f6' }}>
-          {artist.photo_url && <img src={artist.photo_url} alt={artist.stage_name} style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>}
-        </div>
-        <div>
-          <h1 style={{ margin: 0 }}>{artist.stage_name}</h1>
-          <div style={{ color: '#6b7280', marginTop: 4 }}>
-            Contrato: <strong>{artist.contract_type}</strong> &nbsp;·&nbsp; {artist.is_group ? 'Grupo' : 'Solista'}
+      {/* Cabecera: foto + nombre + botones Editar/Archivar-Recuperar */}
+      <div className="module" style={{ display: 'flex', alignItems: 'center', gap: 16, justifyContent:'space-between' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:16 }}>
+          <div style={{ width: 96, height: 96, borderRadius: 16, overflow: 'hidden', background: '#f3f4f6' }}>
+            {artist.photo_url && <img src={artist.photo_url} alt={artist.stage_name} style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>}
           </div>
+          <div>
+            <h1 style={{ margin: 0 }}>{artist.stage_name}</h1>
+            <div style={{ color: '#6b7280', marginTop: 4 }}>
+              Contrato: <strong>{artist.contract_type}</strong> &nbsp;·&nbsp; {artist.is_group ? 'Grupo' : 'Solista'}
+            </div>
+            {artist.archived ? <div style={{ color:'#b91c1c', fontSize:12, marginTop:4 }}>Archivado</div> : null}
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:8 }}>
+          <Button as="a" href={`/artists/${artist.id}/edit`} tone="neutral">Editar</Button>
+          {artist.archived ? (
+            <Button onClick={()=>setArchived(false)}>Recuperar</Button>
+          ) : (
+            <Button tone="danger" onClick={()=>setArchived(true)}>Archivar</Button>
+          )}
         </div>
       </div>
 
@@ -425,7 +452,7 @@ export default function ArtistShow() {
               </div>
             )}
 
-            {/* Contratos del tercero (del vínculo) */}
+            {/* Contratos del tercero */}
             <div style={{ marginTop: 10 }}>
               <h3 style={{ fontSize: 14, margin: '12px 0 6px' }}>Contratos del tercero</h3>
               <ContractsBlock kind="third" ownerId={t.id} />
