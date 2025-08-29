@@ -91,13 +91,16 @@ export default function SmartPartySelect({ kind, label='Buscar', placeholder='Es
       )}
 
       {/* Crear nuevo */}
-      <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
-        {inlineCreateHref && (
-          <Button as="a" href={inlineCreateHref} target="_blank" rel="noreferrer" icon="plus">
+     <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+      {inlineCreateHref && (
+        <a href={inlineCreateHref} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
+          {/* No pases target/href/rel al Button: van en el <a> */}
+          <Button icon="plus">
             Crear nuevo {kind === 'third' ? 'tercero' : 'proveedor'}
           </Button>
-        )}
-      </div>
+        </a>
+      )}
+    </div>
 
       {/* Advertencia de duplicado */}
       {warning && (
