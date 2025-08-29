@@ -1,112 +1,114 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/router'
-import Link from 'next/link'
 import { supabase } from '../../../lib/supabaseClient'
 import Layout from '../../../components/Layout'
+import HeaderCard from '../../../components/HeaderCard'
 
-export default function ThirdDetail(){
-  const { query:{id} } = useRouter()
-  const [row, setRow] = useState<any>(null)
+export default function ThirdView() {
+  const router = useRouter()
+  const { id } = router.query as { id: string }
+
+  const [third, setThird] = useState<any>(null)
+  const [econ, setEcon] = useState<any[]>([])
   const [contracts, setContracts] = useState<any[]>([])
-  const [linkedArtists, setLinkedArtists] = useState<any[]>([])
+  const [artists, setArtists] = useState<Record<string, any>>({})
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string|null>(null)
 
-  const load = async () => {
-    const { data: t } = await supabase.from('third_parties').select('*').eq('id', id).single()
-    setRow(t||null)
-    const { data: c } = await supabase.from('third_party_contracts').select('*').eq('third_party_id', id).order('signed_at', {ascending:false})
-    setContracts(c||[])
-    // artistas a los que está vinculado (económicas)
-    const { data: links } = await supabase
-      .from('third_party_economics')
-      .select('third_party_id, category, third_pct, third_base, base_scope, third_exempt_type, third_exempt_value, third_parties!inner(name,logo_url), third_parties(artist_id)')
-      .eq('third_party_id', id)
-    // simplificado: buscamos artistas por artist_id presentes en third_parties de este tercero
-    const { data: arts } = await supabase.from('third_parties').select('artist_id, artists!inner(id, stage_name, photo_url)').eq('id', id as any)
-    setLinkedArtists((arts||[]).map((a:any)=>a.artists))
-  }
-  useEffect(()=>{ if(id) load() }, [id])
+  useEffect(()=>{
+    if(!id) return
+    ;(async()=>{
+      setLoading(true); setErr(null)
+      try {
+        const { data: t, error: e1 } = await supabase.from('third_parties').select('*').eq('id', id).single()
+        if (e1) throw e1
+        setThird(t)
 
-  const toggleActive = async () => {
-    if (!row) return
-    const { error } = await supabase.from('third_parties').update({ is_active: !row.is_active }).eq('id', row.id)
-    if (error) return alert(error.message)
-    load()
-  }
+        const [{ data: ec }, { data: ct }] = await Promise.all([
+          supabase.from('third_party_economics').select('*').eq('third_party_id', id),
+          supabase.from('third_party_contracts').select('*').eq('third_party_id', id).order('signed_at', { ascending: false }),
+        ])
+        setEcon(ec||[])
+        setContracts(ct||[])
 
-  if (!row) return <Layout><div className="module">Cargando…</div></Layout>
+        // cargar artistas referenciados
+        const artistIds = Array.from(new Set([...(ec||[]).map((x:any)=>x.artist_id), ...(ct||[]).map((x:any)=>x.artist_id)]))
+        if (artistIds.length) {
+          const { data: arts } = await supabase.from('artists').select('id,stage_name,photo_url').in('id', artistIds)
+          setArtists(Object.fromEntries((arts||[]).map((a:any)=>[a.id,a])))
+        }
+      } catch(e:any) {
+        setErr(e.message||'Error')
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [id])
 
-  const show = (v:any)=> v!==null && v!=='' && v!==0
+  // Agrupar por artista
+  const grouped = useMemo(()=>{
+    const map: Record<string, { artist:any, econ:any[], contracts:any[] }> = {}
+    for (const e of econ) {
+      const a = artists[e.artist_id]; if (!a) continue
+      map[e.artist_id] = map[e.artist_id] || { artist:a, econ:[], contracts:[] }
+      map[e.artist_id].econ.push(e)
+    }
+    for (const c of contracts) {
+      const a = artists[c.artist_id]; if (!a) continue
+      map[c.artist_id] = map[c.artist_id] || { artist:a, econ:[], contracts:[] }
+      map[c.artist_id].contracts.push(c)
+    }
+    return Object.values(map).sort((A,B)=> (A.artist.stage_name||'').localeCompare(B.artist.stage_name||''))
+  }, [econ, contracts, artists])
+
+  if (loading) return <Layout><div className="module">Cargando…</div></Layout>
+  if (err || !third) return <Layout><div className="module" style={{color:'#d42842'}}>Error: {err||'No encontrado'}</div></Layout>
+
   return (
     <Layout>
-      {/* Cabecera */}
-      <div className="module" style={{background:'#fff'}}>
-        <div className="row" style={{alignItems:'center'}}>
-          {row.logo_url ? <img src={row.logo_url} style={{width:80,height:80,borderRadius:12,objectFit:'cover'}}/> : null}
-          <h1 style={{marginLeft:12}}>{row.nick || row.name}</h1>
-          <Link href={`/partners/thirds/${row.id}/edit`} className="badge" style={{marginLeft:'auto'}}>✏️ Editar</Link>
-          <button style={{marginLeft:8}} onClick={toggleActive}>{row.is_active ? 'Archivar' : 'Recuperar'}</button>
-        </div>
-      </div>
-
-      {/* Datos personales / fiscales (módulos) */}
+      <HeaderCard photoUrl={third.logo_url} title={third.nick || third.name || 'Tercero'} />
       <div className="module">
-        <h2>Datos personales</h2>
-        <div className="row">
-          {show(row.name) && <div><b>Nombre:</b> {row.name}</div>}
-          {show(row.phone) && <div><b>Teléfono:</b> {row.phone}</div>}
-          {show(row.email) && <div><b>Email:</b> {row.email}</div>}
-        </div>
-      </div>
-
-      <div className="module">
-        <h2>Datos fiscales</h2>
-        <div className="row">
-          {show(row.tax_type) && <div><b>Tipo:</b> {row.tax_type}</div>}
-          {show(row.tax_id) && <div><b>NIF/CIF:</b> {row.tax_id}</div>}
-          {show(row.tax_name) && <div><b>Nombre fiscal:</b> {row.tax_name}</div>}
-        </div>
-        {(row.fiscal_address_line || row.fiscal_city || row.fiscal_province || row.fiscal_postal_code || row.fiscal_country) && (
-          <div className="row" style={{marginTop:6}}>
-            <div><b>Domicilio fiscal:</b> {row.fiscal_address_line || ''} {row.fiscal_city||''} {row.fiscal_province||''} {row.fiscal_postal_code||''} {row.fiscal_country||''}</div>
-          </div>
-        )}
-        {(row.manager_name || row.manager_email || row.manager_phone) && (
-          <div className="row" style={{marginTop:6}}>
-            <div><b>Gestor:</b> {row.manager_name||''} {row.manager_phone?` · ${row.manager_phone}`:''} {row.manager_email?` · ${row.manager_email}`:''}</div>
-          </div>
-        )}
-        {(row.notify_name || row.notify_email) && (
-          <div className="row" style={{marginTop:6}}>
-            <div><b>Notificar liquidaciones a:</b> {row.notify_name||''} {row.notify_email?` · ${row.notify_email}`:''}</div>
-          </div>
-        )}
-      </div>
-
-      <div className="module">
-        <h2>Contratos</h2>
-        {contracts.length===0 ? <small>—</small> : contracts.map((c:any)=>(
-          <div key={c.id} className="row" style={{alignItems:'center', borderTop:'1px solid #e5e7eb', paddingTop:8, marginTop:8}}>
-            <div className="badge" style={{background:c.is_active?'#e8fff0':'#f1f5f9', borderColor:c.is_active?'#86efac':'#e5e7eb'}}>
-              {c.is_active ? 'VIGENTE' : '—'}
+        <h2>Vinculaciones</h2>
+        {grouped.length===0 && <div>No hay vinculaciones.</div>}
+        {grouped.map(({ artist, econ, contracts })=>(
+          <div key={artist.id} className="card" style={{marginBottom:12}}>
+            <div className="row" style={{alignItems:'center', gap:12}}>
+              <img src={artist.photo_url||''} alt="" style={{width:40,height:40,borderRadius:8,objectFit:'cover',background:'#f3f4f6'}}/>
+              <a href={`/artists/${artist.id}`} style={{fontWeight:600}}>{artist.stage_name}</a>
             </div>
-            <div style={{marginLeft:8}}><b>{c.name}</b></div>
-            {c.signed_at && <div style={{marginLeft:8}}>{c.signed_at}</div>}
-            <a href={c.file_url} target="_blank" rel="noreferrer" style={{marginLeft:'auto'}}>📄 Descargar</a>
+
+            {econ.length>0 && (
+              <div style={{marginTop:8}}>
+                <h3 style={{fontSize:16}}>Condiciones económicas</h3>
+                {econ.map((e:any,i:number)=>(
+                  <div key={i} className="row" style={{gap:8}}>
+                    <div className="badge" style={{flex:'0 0 240px'}}>{e.category}</div>
+                    <div>%: {e.third_pct}</div>
+                    <div>Base: {e.third_base==='net'?'Neto':'Bruto'}</div>
+                    <div>Ámbito: {e.base_scope}</div>
+                    {(e.third_exempt_value||0)>0 && (
+                      <div>Exento: {e.third_exempt_type==='percent' ? `${e.third_exempt_value}%` : `${e.third_exempt_value}€`}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {contracts.length>0 && (
+              <div style={{marginTop:8}}>
+                <h3 style={{fontSize:16}}>Contratos</h3>
+                {contracts.map((c:any)=>(
+                  <div key={c.id} className="row" style={{gap:8}}>
+                    <div style={{flex:'0 0 260px'}}>{c.name}</div>
+                    <div>Firma: {c.signed_at}</div>
+                    {c.is_active && <span className="tag tag-green">En Vigor</span>}
+                    <a className="btn" href={c.file_url} target="_blank" rel="noreferrer">Descargar PDF</a>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
-      </div>
-
-      <div className="module">
-        <h2>Vinculado con artistas</h2>
-        {linkedArtists.length===0 ? <small>—</small> : (
-          <div className="row">
-            {linkedArtists.map((a:any)=>(
-              <Link key={a.id} className="badge" href={`/artists/${a.id}`}>
-                {a.stage_name}
-              </Link>
-            ))}
-          </div>
-        )}
       </div>
     </Layout>
   )
