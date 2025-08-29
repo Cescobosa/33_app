@@ -1,217 +1,358 @@
 import { useEffect, useMemo, useState } from 'react'
+import Image from 'next/image'
 import { useRouter } from 'next/router'
-import { supabase } from '../../lib/supabaseClient'
-import Layout from '../../components/Layout'
-import Button from '../../components/ui/Button'
-import HeaderCard from '../../components/HeaderCard'
+import { supabase } from '../../../lib/supabaseClient'
+import Layout from '../../../components/Layout'
 
-type Artist = {
+const BUCKET_LOGOS = 'artist-photos'
+
+type Kind = 'provider'
+type PersonaRef = { full_name: string; role: string; email: string; phone: string }
+
+type Mode = 'particular' | 'empresa'
+
+type SearchHit = {
   id: string
-  stage_name: string
-  full_name: string | null
-  photo_url: string | null
-  is_group: boolean
-  contract_type: 'General' | 'Booking'
-  tax_type: 'particular' | 'empresa'
-  tax_name: string | null
+  kind: 'third' | 'provider'
+  nick: string | null
+  name: string | null
+  logo_url: string | null
   tax_id: string | null
-  iban: string | null
-  is_archived?: boolean | null
+  email: string | null
 }
 
-export default function ArtistView() {
+export default function NewProvider() {
   const router = useRouter()
-  const { id } = router.query as { id: string }
 
-  const [artist, setArtist] = useState<Artist | null>(null)
-  const [members, setMembers] = useState<any[]>([])
-  const [econ, setEcon] = useState<any[]>([])
-  const [thirds, setThirds] = useState<any[]>([])
-  const [artistContracts, setArtistContracts] = useState<any[]>([])
-  const [thirdContracts, setThirdContracts] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [err, setErr] = useState<string | null>(null)
+  // Paso 1: tipo fiscal
+  const [mode, setMode] = useState<Mode>('particular')
+
+  // Cabecera
+  const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [logoPreview, setLogoPreview] = useState<string | null>(null)
+  const [nick, setNick] = useState('')
+
+  // Particular
+  const [pFullName, setPFullName] = useState('')
+  const [pDni, setPDni] = useState('')
+
+  // Empresa (fiscal)
+  const [eCompanyName, setECompanyName] = useState('')
+  const [eCif, setECif] = useState('')
+
+  // Contacto (común)
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+
+  // Empresa → personas de referencia (múltiples)
+  const [persons, setPersons] = useState<PersonaRef[]>([])
+
+  // Autocompletar / duplicados
+  const [q, setQ] = useState('')
+  const [hits, setHits] = useState<SearchHit[]>([])
+  const [checkingDup, setCheckingDup] = useState(false)
 
   useEffect(() => {
-    if (!id) return
-    ;(async () => {
-      setLoading(true)
-      setErr(null)
-      try {
-        const { data: a, error: e1 } = await supabase.from('artists').select('*').eq('id', id).single()
-        if (e1) throw e1
-        setArtist(a as any)
+    if (logoFile) setLogoPreview(URL.createObjectURL(logoFile))
+    else setLogoPreview(null)
+  }, [logoFile])
 
-        const [{ data: m }, { data: ec }, { data: tp }, { data: ac }, { data: tc }] = await Promise.all([
-          supabase.from('artist_members').select('*').eq('artist_id', id),
-          supabase.from('artist_economics').select('*').eq('artist_id', id),
-          supabase.from('third_parties').select('*, third_party_economics(*)').eq('artist_id', id).eq('kind','third'),
-          supabase.from('artist_contracts').select('*').eq('artist_id', id).order('signed_at', { ascending: false }),
-          supabase.from('third_party_contracts').select('*').eq('artist_id', id).order('signed_at', { ascending: false }),
-        ])
+  // Autocompletar por nick / name, solo cuando se teclea algo no vacío
+  useEffect(() => {
+    const term = q.trim()
+    if (!term) { setHits([]); return }
+    const run = async () => {
+      const { data, error } = await supabase
+        .from('third_parties')
+        .select('id,kind,nick,name,logo_url,tax_id,email')
+        .or(`nick.ilike.%${term}%,name.ilike.%${term}%`)
+        .order('nick', { ascending: true })
+        .limit(8)
+      if (!error) setHits((data || []) as SearchHit[])
+    }
+    const t = setTimeout(run, 200)
+    return () => clearTimeout(t)
+  }, [q])
 
-        setMembers(m || [])
-        setEcon(ec || [])
-        setThirds(tp || [])
-        setArtistContracts(ac || [])
-        setThirdContracts(tc || [])
-      } catch (e: any) {
-        setErr(e.message || 'Error')
-      } finally {
-        setLoading(false)
-      }
-    })()
-  }, [id])
+  const title = useMemo(() => {
+    if (mode === 'particular') return pFullName || nick || 'Nuevo proveedor'
+    return eCompanyName || nick || 'Nuevo proveedor'
+  }, [mode, pFullName, eCompanyName, nick])
 
-  const econByCategory = useMemo(() => {
-    const map: Record<string, any> = {}
-    for (const r of econ || []) if (!map[r.category]) map[r.category] = r
-    return Object.values(map)
-  }, [econ])
+  const nameForDB = useMemo(() => {
+    return mode === 'particular' ? (pFullName || nick) : (eCompanyName || nick)
+  }, [mode, pFullName, eCompanyName, nick])
 
-  const contractsByThird: Record<string, any[]> = useMemo(() => {
-    const out: Record<string, any[]> = {}
-    for (const c of thirdContracts || []) (out[c.third_party_id] = out[c.third_party_id] || []).push(c)
-    return out
-  }, [thirdContracts])
+  const taxIdForDB = useMemo(() => {
+    return mode === 'particular' ? (pDni || null) : (eCif || null)
+  }, [mode, pDni, eCif])
 
-  const archiveToggle = async () => {
-    if (!artist) return
-    const wantDelete = !artist.is_archived ? confirm('¿Archivar este artista?') : confirm('¿Recuperar artista?')
-    if (!wantDelete) return
-    await supabase.from('artists').update({ is_archived: !artist.is_archived }).eq('id', artist.id)
-    router.replace(router.asPath)
+  async function uploadAndSign(bucket: string, file: File) {
+    const safeName = file.name.normalize('NFC') // admite ñ/acentos
+    const name = `${Date.now()}-${safeName}`
+    const { error: upErr } = await supabase.storage.from(bucket).upload(name, file)
+    if (upErr) throw upErr
+    const { data, error: signErr } = await supabase.storage.from(bucket).createSignedUrl(name, 60 * 60 * 24 * 365)
+    if (signErr || !data) throw signErr || new Error('No signed URL')
+    return data.signedUrl
   }
 
-  if (loading) return <Layout><div className="module">Cargando…</div></Layout>
-  if (err || !artist) return <Layout><div className="module" style={{color:'#d42842'}}>Error: {err || 'No encontrado'}</div></Layout>
+  const validate = () => {
+    if (!nick.trim()) return 'Pon un Nick (alias corto).'
+    if (!nameForDB?.trim()) return mode === 'particular' ? 'Pon el nombre completo.' : 'Pon el nombre de la empresa.'
+    // contacto mínimo:
+    if (!email.trim() && !phone.trim()) return 'Pon al menos un dato de contacto (email o teléfono).'
+    return null
+  }
+
+  // Comprobación de duplicados por: nick/nom, tax_id, email
+  const findDuplicates = async () => {
+    const or: string[] = []
+    const term = (nameForDB || '').trim()
+    if (term) or.push(`nick.ilike.${term}`, `name.ilike.${term}`)
+    const filters: string[] = []
+    if (taxIdForDB) filters.push(`tax_id.eq.${taxIdForDB}`)
+    if (email) filters.push(`email.ilike.${email}`)
+
+    let query = supabase.from('third_parties').select('id,kind,nick,name,logo_url,tax_id,email').eq('kind', 'provider')
+    if (or.length) query = query.or(or.join(','))
+    if (filters.length) {
+      for (const f of filters) query = query.or(f)
+    }
+    const { data, error } = await query.limit(5)
+    if (error) throw error
+    // eliminar el caso exacto de vacío
+    const list = (data || []).filter(Boolean)
+    // si encontramos alguien que coincida (nick/name exacto, tax, o email)
+    const matches = list.filter(row => {
+      const sameName = term && ((row.nick || '').toLowerCase() === term.toLowerCase() || (row.name || '').toLowerCase() === term.toLowerCase())
+      const sameTax = taxIdForDB && row.tax_id && row.tax_id.toLowerCase() === taxIdForDB.toLowerCase()
+      const sameEmail = email && row.email && row.email.toLowerCase() === email.toLowerCase()
+      return sameName || sameTax || sameEmail
+    })
+    return matches
+  }
+
+  const onSubmit = async () => {
+    const err = validate()
+    if (err) return alert(err)
+    try {
+      setCheckingDup(true)
+      const dups = await findDuplicates()
+      setCheckingDup(false)
+      if (dups.length > 0) {
+        const first = dups[0]
+        const label = first.nick || first.name || 'el existente'
+        const go = confirm(`Ya existe un proveedor con datos coincidentes: "${label}".\n\n¿Quieres abrir su ficha en lugar de crear duplicado?`)
+        if (go) {
+          return router.push(`/partners/providers/${first.id}`)
+        } else {
+          // si no acepta, NO permitimos crear duplicado
+          return alert('No se permite crear duplicados. Ajusta los datos o selecciona el existente.')
+        }
+      }
+
+      let logo_url: string | null = null
+      if (logoFile) logo_url = await uploadAndSign(BUCKET_LOGOS, logoFile)
+
+      const { data: inserted, error: insErr } = await supabase
+        .from('third_parties')
+        .insert({
+          kind: 'provider' as Kind,
+          nick: nick || null,
+          name: nameForDB || null,
+          tax_id: taxIdForDB || null,
+          email: email || null,
+          phone: phone || null,
+          logo_url,
+          is_active: true
+        })
+        .select('id')
+        .single()
+      if (insErr) throw insErr
+
+      // Personas de referencia (si empresa) — opcional, no bloquea si falta la tabla
+      if (mode === 'empresa' && persons.length > 0) {
+        try {
+          for (const p of persons) {
+            if ((p.full_name || '').trim()) {
+              await supabase.from('third_party_contacts').insert({
+                third_party_id: inserted.id,
+                full_name: p.full_name,
+                role: p.role || null,
+                email: p.email || null,
+                phone: p.phone || null
+              })
+            }
+          }
+        } catch {
+          // no romper el flujo si la tabla aún no existe
+          console.warn('Tabla third_party_contacts no disponible; contactos no guardados.')
+        }
+      }
+
+      alert('Proveedor creado.')
+      router.push(`/partners/providers/${inserted.id}`)
+    } catch (e: any) {
+      setCheckingDup(false)
+      alert(e.message || 'Error al crear proveedor')
+    }
+  }
+
+  // Helpers UI
+  const addPerson = () => setPersons(prev => [...prev, { full_name: '', role: '', email: '', phone: '' }])
+  const updPerson = (i: number, k: keyof PersonaRef, v: string) => {
+    const c = [...persons]; (c[i] as any)[k] = v; setPersons(c)
+  }
+  const rmPerson = (i: number) => setPersons(prev => prev.filter((_, idx) => idx !== i))
 
   return (
     <Layout>
-      {/* Botonera superior */}
-      <div className="row" style={{ alignItems:'center', gap:8, marginBottom: 8 }}>
-        <Button as="a" href={`/artists/${artist.id}/edit`} icon="edit">Editar</Button>
-        <Button tone={artist.is_archived ? 'ghost' : 'danger'} icon={artist.is_archived ? 'restore' : 'archive'} onClick={archiveToggle}>
-          {artist.is_archived ? 'Recuperar' : 'Archivar'}
-        </Button>
+      <h1>Nuevo proveedor</h1>
+
+      {/* Autocompletar / Buscar existentes por Nick/Nombre */}
+      <div className="module">
+        <h2>Buscar existente</h2>
+        <div className="row" style={{ gap: 8 }}>
+          <input
+            placeholder="Buscar por Nick o Nombre…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+        </div>
+        {hits.length > 0 && (
+          <div className="card" style={{ marginTop: 8 }}>
+            {hits.map((h) => {
+              const label = h.nick || h.name || '(sin nombre)'
+              return (
+                <a
+                  key={h.id}
+                  className="row"
+                  style={{ alignItems: 'center', gap: 12, padding: '6px 0' }}
+                  href={`/partners/${h.kind === 'provider' ? 'providers' : 'thirds'}/${h.id}`}
+                >
+                  <div style={{ width: 32, height: 32, position: 'relative', borderRadius: 6, overflow: 'hidden', background: '#f3f4f6' }}>
+                    {h.logo_url ? <Image src={h.logo_url} alt={label} fill style={{ objectFit: 'cover' }} /> : null}
+                  </div>
+                  <div style={{ fontWeight: 600 }}>{label}</div>
+                  <div style={{ color: '#6b7280', fontSize: 12 }}>{h.kind === 'provider' ? 'Proveedor' : 'Tercero'}</div>
+                </a>
+              )
+            })}
+          </div>
+        )}
       </div>
 
-      <HeaderCard photoUrl={artist.photo_url} title={artist.stage_name} />
-
+      {/* Tipo fiscal */}
       <div className="module">
-        <h2>Datos básicos</h2>
-        <div className="row">
-          <div><strong>Contrato:</strong> {artist.contract_type}</div>
-          {artist.full_name && <div><strong>Nombre completo:</strong> {artist.full_name}</div>}
-          {artist.tax_type && <div><strong>Tipo fiscal:</strong> {artist.tax_type === 'particular' ? 'Particular' : 'Empresa vinculada'}</div>}
-          {artist.tax_name && <div><strong>Nombre fiscal/Empresa:</strong> {artist.tax_name}</div>}
-          {artist.tax_id && <div><strong>NIF/CIF:</strong> {artist.tax_id}</div>}
-          {artist.iban && <div><strong>IBAN:</strong> {artist.iban}</div>}
+        <h2>Tipo</h2>
+        <div className="row" style={{ gap: 12 }}>
+          <label><input type="radio" checked={mode === 'particular'} onChange={() => setMode('particular')} /> Particular</label>
+          <label><input type="radio" checked={mode === 'empresa'} onChange={() => setMode('empresa')} /> Empresa</label>
         </div>
       </div>
 
-      {artist.is_group && (
+      {/* Cabecera: Logo + Nick */}
+      <div className="module">
+        <h2>Cabecera</h2>
+        <div className="row" style={{ gap: 12, alignItems: 'center' }}>
+          <div style={{ width: 88, height: 88, position: 'relative', borderRadius: 12, overflow: 'hidden', background: '#f3f4f6' }}>
+            {logoPreview ? <Image src={logoPreview} alt="Logo" fill style={{ objectFit: 'cover' }} /> : null}
+          </div>
+          <div>
+            <label>Logo / Foto</label>
+            <input type="file" accept="image/*" onChange={(e) => setLogoFile(e.target.files?.[0] ?? null)} />
+          </div>
+          <div style={{ flex: '1 1 260px' }}>
+            <label>Nick (alias)</label>
+            <input value={nick} onChange={(e) => setNick(e.target.value)} placeholder="Ej. PromoMax / JuanPérez" />
+          </div>
+        </div>
+      </div>
+
+      {/* Particular → Datos personales */}
+      {mode === 'particular' && (
         <div className="module">
-          <h2>Miembros del grupo</h2>
-          {(members||[]).map((m:any)=>(
-            <div key={m.id} className="row" style={{gap:8}}>
-              <div style={{flex:'1 1 auto'}}>{m.full_name}</div>
-              {m.dni && <div>DNI: {m.dni}</div>}
+          <h2>Datos personales</h2>
+          <div className="row" style={{ gap: 12 }}>
+            <div style={{ flex: '1 1 340px' }}>
+              <label>Nombre completo</label>
+              <input value={pFullName} onChange={(e) => setPFullName(e.target.value)} />
             </div>
-          ))}
+            <div style={{ flex: '1 1 180px' }}>
+              <label>DNI / NIF</label>
+              <input value={pDni} onChange={(e) => setPDni(e.target.value)} />
+            </div>
+          </div>
         </div>
       )}
 
-      <div className="module">
-        <h2>Condiciones económicas</h2>
-        {econByCategory
-          .filter((r:any)=>[r.artist_pct, r.office_pct, r.office_exempt_value].some(v=>typeof v==='number' && v>0))
-          .map((r:any, i:number)=>(
-          <div key={i} className="row" style={{borderTop:'1px solid #e5e7eb', paddingTop:12, marginTop:12}}>
-            <div className="badge" style={{flex:'0 0 260px'}}>{r.category}</div>
-            {r.category!=='Conciertos a caché' && r.category!=='Acciones con marcas' && r.category!=='Royalties Discográficos' && (
-              <div><strong>% Artista:</strong> {r.artist_pct ?? 0}</div>
-            )}
-            {r.category==='Royalties Discográficos' && (
-              <>
-                <div><strong>% Artista:</strong> {r.artist_pct ?? 0}</div>
-                <div><strong>Base Artista:</strong> {r.artist_base==='net'?'Neto':'Bruto'}</div>
-              </>
-            )}
-            {r.category!=='Royalties Discográficos' && (
-              <>
-                <div><strong>% Oficina:</strong> {r.office_pct ?? 0}</div>
-                <div><strong>Base Oficina:</strong> {r.office_base==='net'?'Neto':'Bruto'}</div>
-                {(r.office_exempt_value||0)>0 && (
-                  <div><strong>Exento oficina:</strong> {r.office_exempt_type==='percent' ? `${r.office_exempt_value}%` : `${r.office_exempt_value}€`}</div>
-                )}
-              </>
-            )}
-            {r.category==='Acciones con marcas' && r.brands_mode && (
-              <div><strong>Modo marcas:</strong> {r.brands_mode==='office_only'?'Comisión de oficina':'Reparto porcentajes'}</div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      <div className="module">
-        <h2>Terceros vinculados</h2>
-        {(thirds||[]).filter((t:any)=>t.is_active!==false).length===0 && <div>No hay terceros vinculados.</div>}
-
-        {(thirds||[]).filter((t:any)=>t.is_active!==false)
-          .sort((a:any,b:any)=> (a.nick||a.name||'').localeCompare(b.nick||b.name||''))}
-        {(thirds||[]).filter((t:any)=>t.is_active!==false).map((t:any)=>(
-          <div key={t.id} className="card" style={{marginTop:12}}>
-            <div className="row" style={{alignItems:'center', gap:12}}>
-              <img src={t.logo_url||''} alt="" style={{width:48,height:48,borderRadius:8,objectFit:'cover',background:'#f3f4f6'}}/>
-              <a href={`/partners/thirds/${t.id}`} style={{fontWeight:600}}>{t.nick || t.name}</a>
+      {/* Empresa → Datos fiscales */}
+      {mode === 'empresa' && (
+        <div className="module">
+          <h2>Datos fiscales</h2>
+          <div className="row" style={{ gap: 12 }}>
+            <div style={{ flex: '1 1 340px' }}>
+              <label>Nombre fiscal / Empresa</label>
+              <input value={eCompanyName} onChange={(e) => setECompanyName(e.target.value)} />
             </div>
-
-            {(t.third_party_economics||[]).length>0 && (
-              <div style={{marginTop:8}}>
-                <h3 style={{fontSize:16}}>Condiciones económicas</h3>
-                {(t.third_party_economics||[]).map((e:any, i:number)=>(
-                  <div key={i} className="row" style={{gap:8}}>
-                    <div className="badge" style={{flex:'0 0 240px'}}>{e.category}</div>
-                    <div><strong>%:</strong> {e.third_pct}</div>
-                    <div><strong>Base:</strong> {e.third_base==='net'?'Neto':'Bruto'}</div>
-                    <div><strong>Ámbito:</strong> {e.base_scope}</div>
-                    {(e.third_exempt_value||0)>0 && (
-                      <div><strong>Exento:</strong> {e.third_exempt_type==='percent' ? `${e.third_exempt_value}%` : `${e.third_exempt_value}€`}</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {Array.isArray(contractsByThird[t.id]) && contractsByThird[t.id].length>0 && (
-              <div style={{marginTop:8}}>
-                <h3 style={{fontSize:16}}>Contratos</h3>
-                {contractsByThird[t.id].map((c:any)=>(
-                  <div key={c.id} className="row" style={{gap:8}}>
-                    <div style={{flex:'0 0 260px'}}>{c.name}</div>
-                    <div>Firma: {c.signed_at}</div>
-                    {c.is_active && <span className="tag tag-green">En Vigor</span>}
-                    <a className="btn" href={c.file_url} target="_blank" rel="noreferrer">Descargar PDF</a>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div style={{ flex: '1 1 180px' }}>
+              <label>NIF / CIF</label>
+              <input value={eCif} onChange={(e) => setECif(e.target.value)} />
+            </div>
           </div>
-        ))}
+        </div>
+      )}
+
+      {/* Contacto (común) + Personas de referencia si empresa */}
+      <div className="module">
+        <h2>Contacto</h2>
+        <div className="row" style={{ gap: 12 }}>
+          <div style={{ flex: '1 1 260px' }}>
+            <label>Email</label>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
+          <div style={{ flex: '1 1 200px' }}>
+            <label>Teléfono</label>
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+          </div>
+        </div>
+
+        {mode === 'empresa' && (
+          <div style={{ marginTop: 12 }}>
+            <h3 style={{ fontSize: 16, marginBottom: 8 }}>Personas de referencia</h3>
+            <button onClick={addPerson}>+ Añadir persona</button>
+            {persons.map((p, i) => (
+              <div key={i} className="row" style={{ gap: 8, marginTop: 8 }}>
+                <div style={{ flex: '1 1 240px' }}>
+                  <label>Nombre completo</label>
+                  <input value={p.full_name} onChange={(e) => updPerson(i, 'full_name', e.target.value)} />
+                </div>
+                <div style={{ flex: '1 1 200px' }}>
+                  <label>Cargo</label>
+                  <input value={p.role} onChange={(e) => updPerson(i, 'role', e.target.value)} />
+                </div>
+                <div style={{ flex: '1 1 240px' }}>
+                  <label>Email</label>
+                  <input value={p.email} onChange={(e) => updPerson(i, 'email', e.target.value)} />
+                </div>
+                <div style={{ flex: '1 1 180px' }}>
+                  <label>Teléfono</label>
+                  <input value={p.phone} onChange={(e) => updPerson(i, 'phone', e.target.value)} />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                  <button onClick={() => rmPerson(i)}>Eliminar</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="module">
-        <h2>Contratos (artista)</h2>
-        {(artistContracts||[]).length===0 && <div>No hay contratos.</div>}
-        {(artistContracts||[]).map((c:any)=>(
-          <div key={c.id} className="row" style={{gap:8}}>
-            <div style={{flex:'0 0 260px'}}>{c.name}</div>
-            <div>Firma: {c.signed_at}</div>
-            {c.is_active && <span className="tag tag-green">En Vigor</span>}
-            <a className="btn" href={c.file_url} target="_blank" rel="noreferrer">Descargar PDF</a>
-          </div>
-        ))}
+        <button onClick={onSubmit} disabled={checkingDup}>
+          {checkingDup ? 'Comprobando…' : 'Crear proveedor'}
+        </button>
       </div>
     </Layout>
   )
