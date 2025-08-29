@@ -361,8 +361,8 @@ export default function NewArtist() {
   }
 
   return (
+    </Layout>
     <div className="container">
-      <Nav/>
       <h1>Nuevo artista</h1>
 
       <div className="card">
@@ -548,5 +548,6 @@ export default function NewArtist() {
         <button onClick={onSubmit}>Guardar artista</button>
       </div>
     </div>
+  </Layout>
   )
 }
