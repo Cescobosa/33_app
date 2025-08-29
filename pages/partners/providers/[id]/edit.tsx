@@ -1,8 +1,8 @@
 // pages/partners/providers/[id]/edit.tsx
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
-import { supabase } from '../../../lib/supabaseClient'
-import Layout from '../../../components/Layout'
+import { supabase } from '../../../../lib/supabaseClient'
+import Layout from '../../../../components/Layout'
 
 const BUCKET_PHOTOS = 'artist-photos'
 const BUCKET_CONTRACTS = 'contracts'
