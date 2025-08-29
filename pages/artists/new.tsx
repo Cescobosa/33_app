@@ -204,7 +204,8 @@ export default function NewArtist() {
         } else {
           if (!pctOK(row.artist_pct)) return `En ${row.category}, % Artista debe estar entre 0 y 100.`
           if (!pctOK(row.office_pct)) return `En ${row.category}, % Oficina debe estar entre 0 y 100.`
-          if (row.office_exempt_type === 'percent' && !pctOK(row.office_exempt_value)) return `En ${row categoría}, Exento (%) debe estar entre 0 y 100.`
+          if (row.office_exempt_type === 'percent' && !pctOK(row.office_exempt_value))
+            return `En ${row.category}, Exento (%) debe estar entre 0 y 100.`
         }
       }
     }
