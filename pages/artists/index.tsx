@@ -24,7 +24,6 @@ export default function ArtistsIndex() {
       .order('stage_name', { ascending: true });
 
     if (q.trim()) {
-      // búsqueda simple por stage_name (extiéndelo si tienes un TSVector)
       req = req.ilike('stage_name', `%${q.trim()}%`);
     }
     const { data, error } = await req;
@@ -37,21 +36,19 @@ export default function ArtistsIndex() {
 
   return (
     <Layout>
-      <div className="module" style={{display:'flex', alignItems:'center', gap:12, justifyContent:'space-between'}}>
-        {/* Botones a la IZQUIERDA (fuera de la barra) */}
-        <div style={{display:'flex', gap:8}}>
-          <Link href="/artists/archived"><Button tone="neutral">Artistas archivados</Button></Link>
-          <Link href="/artists/new"><Button>+ Añadir artista</Button></Link>
-        </div>
-
-        {/* Búsqueda */}
-        <div style={{flex:'1 1 auto', maxWidth:520, marginLeft:'auto'}}>
+      {/* Cabecera: búsqueda a la izquierda; botones a la derecha */}
+      <div className="module" style={{display:'flex', alignItems:'center', gap:12}}>
+        <div style={{flex:'1 1 auto', maxWidth:520}}>
           <input
             placeholder="Buscar por nombre artístico…"
             value={q}
             onChange={(e)=>setQ(e.target.value)}
             style={{width:'100%'}}
           />
+        </div>
+        <div style={{marginLeft:'auto', display:'flex', gap:8}}>
+          <Link href="/artists/archived"><Button tone="neutral">Artistas archivados</Button></Link>
+          <Link href="/artists/new"><Button>+ Añadir artista</Button></Link>
         </div>
       </div>
 
