@@ -1,145 +1,179 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/router'
-import Link from 'next/link'
 import { supabase } from '../../lib/supabaseClient'
 import Layout from '../../components/Layout'
+import HeaderCard from '../../components/HeaderCard'
 
-export default function ArtistDetail(){
-  const { query:{id} } = useRouter()
-  const [artist, setArtist] = useState<any>(null)
+type Artist = {
+  id: string
+  stage_name: string
+  full_name: string | null
+  photo_url: string | null
+  is_group: boolean
+  contract_type: 'General' | 'Booking'
+  tax_type: 'particular' | 'empresa'
+  tax_name: string | null
+  tax_id: string | null
+  iban: string | null
+  is_archived?: boolean | null
+}
+
+export default function ArtistView() {
+  const router = useRouter()
+  const { id } = router.query as { id: string }
+
+  const [artist, setArtist] = useState<Artist | null>(null)
   const [members, setMembers] = useState<any[]>([])
   const [econ, setEcon] = useState<any[]>([])
   const [thirds, setThirds] = useState<any[]>([])
-  const [contracts, setContracts] = useState<any[]>([])
+  const [artistContracts, setArtistContracts] = useState<any[]>([])
+  const [thirdContracts, setThirdContracts] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
 
-  const load = async () => {
-    const { data: a } = await supabase.from('artists').select('*').eq('id', id).single()
-    setArtist(a||null)
-    const { data: m } = await supabase.from('artist_members').select('*').eq('artist_id', id)
-    setMembers(m||[])
-    const { data: e } = await supabase.from('artist_economics').select('*').eq('artist_id', id)
-    setEcon(e||[])
-    const { data: t } = await supabase.from('third_parties').select('*, third_party_economics(*)').eq('artist_id', id).eq('is_active', true)
-    setThirds(t||[])
-    const { data: c } = await supabase.from('artist_contracts').select('*').eq('artist_id', id).order('signed_at', {ascending:false})
-    setContracts(c||[])
-  }
-  useEffect(()=>{ if(id) load() }, [id])
+  useEffect(() => {
+    if (!id) return
+    ;(async () => {
+      setLoading(true)
+      setErr(null)
+      try {
+        const { data: a, error: e1 } = await supabase
+          .from('artists')
+          .select('*')
+          .eq('id', id)
+          .single()
+        if (e1) throw e1
+        setArtist(a as any)
 
-  const toggleArchive = async () => {
-    if (!artist) return
-    const { error } = await supabase.from('artists').update({ is_archived: !artist.is_archived }).eq('id', artist.id)
-    if (error) return alert(error.message)
-    load()
-  }
+        const [{ data: m }, { data: ec }, { data: tp }, { data: ac }, { data: tc }] =
+          await Promise.all([
+            supabase.from('artist_members').select('*').eq('artist_id', id),
+            supabase.from('artist_economics').select('*').eq('artist_id', id),
+            supabase
+              .from('third_parties')
+              .select('*, third_party_economics(*)')
+              .eq('artist_id', id)
+              .eq('kind', 'third'),
+            supabase
+              .from('artist_contracts')
+              .select('*')
+              .eq('artist_id', id)
+              .order('signed_at', { ascending: false }),
+            supabase
+              .from('third_party_contracts')
+              .select('*')
+              .eq('artist_id', id)
+              .order('signed_at', { ascending: false }),
+          ])
 
-  const show = (v:any)=> v!==null && v!=='' && v!==0
-
-  const econShown = () => {
-    if (!econ) return []
-    return econ.filter((e:any)=>{
-      if (e.category==='Royalties Discográficos') return (e.artist_pct>0)
-      if (e.category==='Conciertos a caché') return (e.office_pct>0 || e.office_exempt_value>0)
-      if (e.category==='Acciones con marcas') {
-        if (e.brands_mode==='office_only') return (e.office_pct>0 || e.office_exempt_value>0)
-        return (e.artist_pct>0 || e.office_pct>0 || e.office_exempt_value>0)
+        setMembers(m || [])
+        setEcon(ec || [])
+        setThirds(tp || [])
+        setArtistContracts(ac || [])
+        setThirdContracts(tc || [])
+      } catch (e: any) {
+        setErr(e.message || 'Error')
+      } finally {
+        setLoading(false)
       }
-      return (e.artist_pct>0 || e.office_pct>0 || e.office_exempt_value>0)
-    })
-  }
+    })()
+  }, [id])
 
-  if (!artist) return <Layout><div className="module">Cargando…</div></Layout>
+  // Unificar condiciones por categoría (evita duplicados)
+  const econByCategory = useMemo(() => {
+    const map: Record<string, any> = {}
+    for (const r of econ || []) {
+      if (!map[r.category]) map[r.category] = r
+    }
+    return Object.values(map)
+  }, [econ])
+
+  // Contratos de terceros agrupados por tercero
+  const contractsByThird: Record<string, any[]> = useMemo(() => {
+    const out: Record<string, any[]> = {}
+    for (const c of thirdContracts || []) {
+      ;(out[c.third_party_id] = out[c.third_party_id] || []).push(c)
+    }
+    return out
+  }, [thirdContracts])
+
+  if (loading) return <Layout><div className="module">Cargando…</div></Layout>
+  if (err || !artist) return <Layout><div className="module" style={{color:'#d42842'}}>Error: {err || 'No encontrado'}</div></Layout>
 
   return (
     <Layout>
-      {/* Cabecera (sin título de módulo) */}
-      <div className="module" style={{background:'#fff'}}>
-        <div className="row" style={{alignItems:'center'}}>
-          {artist.photo_url ? <img src={artist.photo_url} style={{width:80, height:80, borderRadius:12, objectFit:'cover'}}/> : null}
-          <h1 style={{marginLeft:12}}>{artist.stage_name}</h1>
-          <Link href={`/artists/${artist.id}/edit`} className="badge" style={{marginLeft:'auto'}}>✏️ Editar</Link>
-          <button style={{marginLeft:8}} onClick={toggleArchive}>{artist.is_archived ? 'Recuperar' : 'Archivar'}</button>
-        </div>
-      </div>
+      <HeaderCard photoUrl={artist.photo_url} title={artist.stage_name} />
 
-      {/* Datos personales */}
+      {/* Datos básicos compactos */}
       <div className="module">
-        <h2>Datos personales</h2>
+        <h2>Datos básicos</h2>
         <div className="row">
-          {show(artist.full_name) && <div><b>Nombre completo:</b> {artist.full_name}</div>}
-          {show(artist.dni) && <div><b>DNI:</b> {artist.dni} {artist.dni_front_url || artist.dni_back_url ? <a href={artist.dni_front_url||'#'} target="_blank" rel="noreferrer" style={{marginLeft:8}}>🪪 DNI</a>:null}</div>}
-          {show(artist.birth_date) && <div><b>Nacimiento:</b> {artist.birth_date}</div>}
+          <div><strong>Contrato:</strong> {artist.contract_type}</div>
+          {artist.full_name && <div><strong>Nombre completo:</strong> {artist.full_name}</div>}
+          {artist.tax_type && <div><strong>Tipo fiscal:</strong> {artist.tax_type === 'particular' ? 'Particular' : 'Empresa vinculada'}</div>}
+          {artist.tax_name && <div><strong>Nombre fiscal/Empresa:</strong> {artist.tax_name}</div>}
+          {artist.tax_id && <div><strong>NIF/CIF:</strong> {artist.tax_id}</div>}
+          {artist.iban && <div><strong>IBAN:</strong> {artist.iban}</div>}
         </div>
-
-        {artist.is_group && (
-          <>
-            <h3 style={{marginTop:10}}>Miembros del grupo</h3>
-            {members.length===0 ? <small>—</small> : members.map((m:any)=>(
-              <div key={m.id} className="row" style={{borderTop:'1px solid #e5e7eb', paddingTop:8, marginTop:8}}>
-                <div><b>{m.full_name}</b></div>
-                {m.dni && <div className="badge">{m.dni}</div>}
-                {(m.dni_front_url || m.dni_back_url) && <a href={m.dni_front_url||'#'} target="_blank" rel="noreferrer">🪪 DNI</a>}
-              </div>
-            ))}
-          </>
-        )}
+        <div style={{marginTop:12}}>
+          <a className="btn" href={`/artists/${artist.id}/edit`}>Editar</a>
+        </div>
       </div>
 
-      {/* Datos fiscales */}
-      <div className="module">
-        <h2>Datos fiscales</h2>
-        <div className="row">
-          <div><b>Tipo:</b> {artist.tax_type}</div>
-          {show(artist.tax_name) && <div><b>Nombre fiscal:</b> {artist.tax_name}</div>}
-          {show(artist.tax_id) && <div><b>NIF/CIF:</b> {artist.tax_id}</div>}
-          {show(artist.iban) && <div><b>IBAN:</b> {artist.iban}</div>}
+      {/* Miembros del grupo */}
+      {artist.is_group && (
+        <div className="module">
+          <h2>Miembros del grupo</h2>
+          {(members||[]).map((m:any)=>(
+            <div key={m.id} className="row" style={{gap:8}}>
+              <div style={{flex:'1 1 auto'}}>{m.full_name}</div>
+              {m.dni && <div>DNI: {m.dni}</div>}
+            </div>
+          ))}
+          <div style={{marginTop:12}}>
+            <a className="btn" href={`/artists/${artist.id}/edit#splits`}>Editar reparto</a>
+          </div>
         </div>
-        {(artist.fiscal_address_line || artist.fiscal_city || artist.fiscal_province || artist.fiscal_postal_code || artist.fiscal_country) && (
-          <div className="row" style={{marginTop:6}}>
-            <div><b>Domicilio fiscal:</b> {artist.fiscal_address_line || ''} {artist.fiscal_city||''} {artist.fiscal_province||''} {artist.fiscal_postal_code||''} {artist.fiscal_country||''}</div>
-          </div>
-        )}
-        {(artist.manager_name || artist.manager_email || artist.manager_phone) && (
-          <div className="row" style={{marginTop:6}}>
-            <div><b>Gestor:</b> {artist.manager_name||''} {artist.manager_phone?` · ${artist.manager_phone}`:''} {artist.manager_email?` · ${artist.manager_email}`:''}</div>
-          </div>
-        )}
-        {(artist.notify_name || artist.notify_email) && (
-          <div className="row" style={{marginTop:6}}>
-            <div><b>Notificar liquidaciones a:</b> {artist.notify_name||''} {artist.notify_email?` · ${artist.notify_email}`:''}</div>
-          </div>
-        )}
-      </div>
+      )}
 
-      {/* Condiciones económicas */}
+      {/* Reparto (solo si es grupo) */}
+      {artist.is_group && (
+        <GroupSplits artistId={artist.id} />
+      )}
+
+      {/* Condiciones económicas (sin duplicados y ocultando 0/blank) */}
       <div className="module">
         <h2>Condiciones económicas</h2>
-        {econShown().length===0 ? <small>—</small> : econShown().map((e:any)=>(
-          <div key={e.id} className="card" style={{marginTop:8}}>
-            <div className="row" style={{alignItems:'center'}}>
-              <div className="badge">{e.category}</div>
-              {e.category==='Acciones con marcas' && e.brands_mode && <div style={{marginLeft:8}}><b>Modo:</b> {e.brands_mode==='office_only'?'Comisión de oficina':'Reparto porcentajes'}</div>}
-            </div>
-            <div className="row" style={{marginTop:6}}>
-              {e.artist_pct>0 && <div><b>% Artista:</b> {e.artist_pct}% ({e.artist_base==='gross'?'Bruto':'Neto'})</div>}
-              {e.office_pct>0 && <div><b>% Oficina:</b> {e.office_pct}% ({e.office_base==='gross'?'Bruto':'Neto'})</div>}
-              {e.office_exempt_value>0 && <div><b>Exento Oficina:</b> {e.office_exempt_type==='percent'? `${e.office_exempt_value}%` : `${e.office_exempt_value} €`}</div>}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Contratos */}
-      <div className="module">
-        <h2>Contratos</h2>
-        {contracts.length===0 ? <small>—</small> : contracts.map((c:any)=>(
-          <div key={c.id} className="row" style={{alignItems:'center', borderTop:'1px solid #e5e7eb', paddingTop:8, marginTop:8}}>
-            <div className="badge" style={{background:c.is_active?'#e8fff0':'#f1f5f9', borderColor:c.is_active?'#86efac':'#e5e7eb'}}>
-              {c.is_active ? 'VIGENTE' : '—'}
-            </div>
-            <div style={{marginLeft:8}}><b>{c.name}</b></div>
-            {c.signed_at && <div style={{marginLeft:8}}>{c.signed_at}</div>}
-            <a href={c.file_url} target="_blank" rel="noreferrer" style={{marginLeft:'auto'}}>📄 Descargar</a>
+        {econByCategory
+          .filter((r:any)=>{
+            // Ocultar filas vacías: todo a 0 o null
+            const vals = [r.artist_pct, r.office_pct, r.office_exempt_value]
+            return vals.some(v => (typeof v === 'number' && v > 0))
+          })
+          .map((r:any, i:number)=>(
+          <div key={i} className="row" style={{borderTop:'1px solid #e5e7eb', paddingTop:12, marginTop:12}}>
+            <div className="badge" style={{flex:'0 0 260px'}}>{r.category}</div>
+            {r.category!=='Conciertos a caché' && r.category!=='Acciones con marcas' && r.category!=='Royalties Discográficos' && (
+              <div>% Artista: {r.artist_pct ?? 0}</div>
+            )}
+            {r.category==='Royalties Discográficos' && (
+              <>
+                <div>% Artista: {r.artist_pct ?? 0}</div>
+                <div>Base Artista: {r.artist_base==='net'?'Neto':'Bruto'}</div>
+              </>
+            )}
+            {r.category!=='Royalties Discográficos' && (
+              <>
+                <div>% Oficina: {r.office_pct ?? 0}</div>
+                <div>Base Oficina: {r.office_base==='net'?'Neto':'Bruto'}</div>
+                {(r.office_exempt_value||0)>0 && (
+                  <div>Exento oficina: {r.office_exempt_type==='percent' ? `${r.office_exempt_value}%` : `${r.office_exempt_value}€`}</div>
+                )}
+              </>
+            )}
+            {r.category==='Acciones con marcas' && r.brands_mode && (
+              <div>Modo marcas: {r.brands_mode==='office_only'?'Comisión de oficina':'Reparto porcentajes'}</div>
+            )}
           </div>
         ))}
       </div>
@@ -147,25 +181,95 @@ export default function ArtistDetail(){
       {/* Terceros vinculados */}
       <div className="module">
         <h2>Terceros vinculados</h2>
-        {thirds.length===0 ? (
-          <div><small>No hay terceros activos.</small> <Link className="badge" href={`/artists/${artist.id}/edit#thirds`}>+ Añadir tercero</Link></div>
-        ) : thirds.map((t:any)=>(
-          <div key={t.id} className="card" style={{marginTop:8}}>
-            <div className="row" style={{alignItems:'center'}}>
-              {t.logo_url ? <img src={t.logo_url} style={{width:32,height:32,borderRadius:8,objectFit:'cover'}}/> : null}
-              <Link href={`/partners/thirds/${t.id}`} style={{marginLeft:8, fontWeight:700}}>{t.nick || t.name}</Link>
-              {t.contract_url ? <a href={t.contract_url} target="_blank" rel="noreferrer" style={{marginLeft:'auto'}}>📄 Contrato</a> : null}
+        {(thirds||[])
+          .filter((t:any)=>t.is_active!==false)
+          .sort((a:any,b:any)=> (a.nick||a.name||'').localeCompare(b.nick||b.name||''))}
+          { (thirds||[]).length === 0 && <div>No hay terceros vinculados.</div> }
+        {(thirds||[]).filter((t:any)=>t.is_active!==false).map((t:any)=>(
+          <div key={t.id} className="card" style={{marginTop:12}}>
+            <div className="row" style={{alignItems:'center', gap:12}}>
+              <img src={t.logo_url||''} alt="" style={{width:48,height:48,borderRadius:8,objectFit:'cover',background:'#f3f4f6'}}/>
+              <a href={`/partners/thirds/${t.id}`} style={{fontWeight:600}}>{t.nick || t.name}</a>
             </div>
-            {(t.third_party_economics||[]).filter((e:any)=>e.third_pct>0).map((e:any)=>(
-              <div key={e.id} className="row" style={{marginTop:6}}>
-                <div className="badge">{e.category}</div>
-                <div><b>%</b> {e.third_pct}%</div>
-                <div><b>Base</b> {e.third_base==='gross'?'Bruto':'Neto'} · <b>Ámbito</b> {e.base_scope}</div>
+
+            {(t.third_party_economics||[]).length>0 && (
+              <div style={{marginTop:8}}>
+                <h3 style={{fontSize:16}}>Condiciones económicas</h3>
+                {(t.third_party_economics||[]).map((e:any, i:number)=>(
+                  <div key={i} className="row" style={{gap:8}}>
+                    <div className="badge" style={{flex:'0 0 240px'}}>{e.category}</div>
+                    <div>%: {e.third_pct}</div>
+                    <div>Base: {e.third_base==='net'?'Neto':'Bruto'}</div>
+                    <div>Ámbito: {e.base_scope}</div>
+                    {(e.third_exempt_value||0)>0 && (
+                      <div>Exento: {e.third_exempt_type==='percent' ? `${e.third_exempt_value}%` : `${e.third_exempt_value}€`}</div>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
+
+            {Array.isArray(contractsByThird[t.id]) && contractsByThird[t.id].length>0 && (
+              <div style={{marginTop:8}}>
+                <h3 style={{fontSize:16}}>Contratos</h3>
+                {contractsByThird[t.id].map((c:any)=>(
+                  <div key={c.id} className="row" style={{gap:8}}>
+                    <div style={{flex:'0 0 260px'}}>{c.name}</div>
+                    <div>Firma: {c.signed_at}</div>
+                    {c.is_active && <span className="tag tag-green">En Vigor</span>}
+                    <a className="btn" href={c.file_url} target="_blank" rel="noreferrer">Descargar PDF</a>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Contratos del artista */}
+      <div className="module">
+        <h2>Contratos (artista)</h2>
+        {(artistContracts||[]).length===0 && <div>No hay contratos.</div>}
+        {(artistContracts||[]).map((c:any)=>(
+          <div key={c.id} className="row" style={{gap:8}}>
+            <div style={{flex:'0 0 260px'}}>{c.name}</div>
+            <div>Firma: {c.signed_at}</div>
+            {c.is_active && <span className="tag tag-green">En Vigor</span>}
+            <a className="btn" href={c.file_url} target="_blank" rel="noreferrer">Descargar PDF</a>
           </div>
         ))}
       </div>
     </Layout>
+  )
+}
+
+// --- Subcomponente para ver el reparto (lee la tabla) ---
+function GroupSplits({ artistId }: { artistId: string }) {
+  const [rows, setRows] = useState<any[]>([])
+  useEffect(() => {
+    ;(async () => {
+      const { data } = await supabase
+        .from('artist_member_splits')
+        .select('pct, artist_members(full_name,id)')
+        .eq('artist_id', artistId)
+      setRows(data || [])
+    })()
+  }, [artistId])
+
+  if (!rows.length) return null
+
+  const total = rows.reduce((a,b)=>a + (Number(b.pct)||0), 0)
+
+  return (
+    <div className="module">
+      <h2>Reparto de beneficio (artista)</h2>
+      {rows.map((r:any)=>(
+        <div key={r.artist_members.id} className="row" style={{gap:8}}>
+          <div style={{flex:'1 1 auto'}}>{r.artist_members.full_name}</div>
+          <div>{r.pct}%</div>
+        </div>
+      ))}
+      <div style={{marginTop:8}}>Suma: <strong>{total}%</strong></div>
+    </div>
   )
 }
