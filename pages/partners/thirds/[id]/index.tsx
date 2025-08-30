@@ -1,76 +1,86 @@
 // pages/partners/thirds/[id]/index.tsx
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import Link from 'next/link';
 import { supabase } from '../../../../lib/supabaseClient';
 import Layout from '../../../../components/Layout';
 import Button from '../../../../components/Button';
 import ContractsBlock from '../../../../components/ContractsBlock';
 
-type Tp = {
+type Third = {
   id: string;
+  artist_id: string | null;
   kind: 'third'|'provider';
-  nick: string|null;
-  name: string|null;
-  logo_url: string|null;
-  is_deleted?: boolean|null;
+  nick: string | null;
+  name: string | null;
+  tax_id: string | null;
+  email: string | null;
+  phone: string | null;
+  logo_url: string | null;
+  is_active: boolean | null;
 };
 
 export default function ThirdShow() {
   const router = useRouter();
   const { id } = router.query as { id: string };
-  const [row, setRow] = useState<Tp|null>(null);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string|null>(null);
+  const [t, setT] = useState<Third | null>(null);
 
   async function load() {
     if (!id) return;
-    setLoading(true); setErr(null);
-    const { data, error } = await supabase
-      .from('third_parties')
-      .select('id, kind, nick, name, logo_url, is_deleted')
-      .eq('id', id).single();
-    if (error) setErr(error.message);
-    setRow(data as any);
-    setLoading(false);
+    const { data } = await supabase.from('third_parties').select('*').eq('id', id).single();
+    setT(data as any);
   }
   useEffect(()=>{ load(); }, [id]);
 
-  async function onDelete() {
-    if (!row) return;
-    const confirm = prompt('Para eliminar este registro, escribe: ELIMINAR');
-    if (confirm !== 'ELIMINAR') return;
-    const { error } = await supabase
-      .from('third_parties')
-      .update({ is_deleted: true, is_active: false })
-      .eq('id', row.id);
-    if (error) return alert(error.message);
-    router.push('/partners/thirds'); // vuelve al listado (ajústalo a tu ruta)
+  async function hardDelete() {
+    if (!t) return;
+    const sure = prompt('Escribe ELIMINAR para borrar definitivamente este tercero/proveedor del sistema');
+    if (sure !== 'ELIMINAR') return;
+    try {
+      // Borra contratos y economics del tercero
+      const a = await supabase.from('third_party_contracts').delete().eq('third_party_id', t.id);
+      if (a.error) throw a.error;
+      const b = await supabase.from('third_party_economics').delete().eq('third_party_id', t.id);
+      if (b.error) throw b.error;
+      const c = await supabase.from('third_party_contacts').delete().eq('third_party_id', t.id);
+      if (c.error) throw c.error;
+
+      // Limpia datos (para que nunca aparezca en listados) y marca inactivo
+      const u = await supabase.from('third_parties').update({
+        artist_id: null,
+        nick: `[ELIMINADO] ${t.id.slice(0,6)}`,
+        name: null,
+        tax_id: null,
+        email: null,
+        phone: null,
+        logo_url: null,
+        is_active: false
+      }).eq('id', t.id);
+      if (u.error) throw u.error;
+
+      router.push('/partners/thirds'); // vuelve al listado
+    } catch (e:any) {
+      alert(e.message || 'No se pudo borrar');
+    }
   }
 
-  if (loading) return <Layout><div className="module">Cargando…</div></Layout>;
-  if (err || !row)  return <Layout><div className="module" style={{color:'#d42842'}}>Error: {err || 'No encontrado'}</div></Layout>;
+  if (!t) return <Layout><div className="module">Cargando…</div></Layout>;
 
   return (
     <Layout>
-      <div className="module" style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:16}}>
-        <div style={{display:'flex', alignItems:'center', gap:12}}>
-          <div style={{width:96, height:96, borderRadius:16, background:'#f3f4f6', overflow:'hidden'}}>
-            {row.logo_url ? <img src={row.logo_url} alt={row.nick||row.name||''} style={{width:'100%', height:'100%', objectFit:'cover'}}/> : null}
-          </div>
-          <div>
-            <h1 style={{margin:0}}>{row.nick || row.name || 'Sin nombre'}</h1>
-            <small style={{color:'#6b7280'}}>{row.kind==='provider'?'Proveedor':'Tercero'}</small>
-          </div>
+      <div className="module" style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+        <div>
+          <h1 style={{margin:0}}>{t.nick || t.name || 'Sin nombre'}</h1>
+          <div style={{color:'#6b7280'}}>{t.kind === 'third' ? 'Tercero' : 'Proveedor'}</div>
         </div>
         <div style={{display:'flex', gap:8}}>
-          <Link href="/partners/thirds"><Button tone="neutral">Volver</Button></Link>
-          <Button tone="danger" onClick={onDelete}>Borrar</Button>
+          <Button as="a" href={`/partners/${t.kind==='third'?'thirds':'providers'}/${t.id}/edit`} tone="neutral">Editar</Button>
+          <Button tone="danger" onClick={hardDelete}>Borrar</Button>
         </div>
       </div>
 
       <div className="module">
-        <ContractsBlock kind="third" ownerId={row.id}/>
+        <h2>Contratos</h2>
+        <ContractsBlock kind="third" ownerId={t.id} />
       </div>
     </Layout>
   );
