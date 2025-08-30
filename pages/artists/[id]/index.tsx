@@ -147,22 +147,15 @@ export default function ArtistShow() {
   }
 
   // Borrado definitivo (con orden seguro y control de errores)
+    // Borrado definitivo (orden seguro, sin tabla inexistente)
   async function hardDelete() {
     if (!artist) return;
     const sure = prompt('Escribe ELIMINAR para borrar definitivamente este artista');
     if (sure !== 'ELIMINAR') return;
 
     try {
-      // 0) contratos del artista
-      {
-        const { error } = await supabase
-          .from('artist_contracts')
-          .delete()
-          .eq('artist_id', artist.id);
-        if (error) throw error;
-      }
+      await supabase.from('artist_contracts').delete().eq('artist_id', artist.id);
 
-      // 1) terceros del artista -> borrar colgantes y luego el tercero
       const { data: tps, error: tpsErr } = await supabase
         .from('third_parties')
         .select('id')
@@ -170,84 +163,24 @@ export default function ArtistShow() {
       if (tpsErr) throw tpsErr;
 
       for (const tp of (tps || [])) {
-        let r;
-        r = await supabase.from('third_party_contracts').delete().eq('third_party_id', tp.id);
-        if (r.error) throw r.error;
-
-        r = await supabase.from('third_party_economics').delete().eq('third_party_id', tp.id);
-        if (r.error) throw r.error;
-
-        r = await supabase.from('third_party_contacts').delete().eq('third_party_id', tp.id);
-        if (r.error) throw r.error;
+        await supabase.from('third_party_contracts').delete().eq('third_party_id', tp.id);
+        await supabase.from('third_party_economics').delete().eq('third_party_id', tp.id);
+        await supabase.from('third_party_contacts').delete().eq('third_party_id', tp.id);
       }
+      await supabase.from('third_parties').delete().eq('artist_id', artist.id);
 
-      {
-        const { error } = await supabase
-          .from('third_parties')
-          .delete()
-          .eq('artist_id', artist.id);
-        if (error) throw error;
-      }
+      await supabase.from('artist_member_splits').delete().eq('artist_id', artist.id);
+      await supabase.from('artist_members').delete().eq('artist_id', artist.id);
+      await supabase.from('artist_economics').delete().eq('artist_id', artist.id);
 
-      // 2) perfiles de miembros (si existe la tabla)
-      try {
-        const r = await supabase
-          .from('artist_member_profiles')
-          .delete()
-          .eq('artist_id', artist.id);
-        if (r.error && !`${r.error.message}`.includes('relation')) throw r.error;
-      } catch (e:any) {
-        if (!`${e?.message||''}`.includes('relation')) throw e;
-      }
+      const { error } = await supabase.from('artists').delete().eq('id', artist.id);
+      if (error) throw error;
 
-      // 3) splits de miembros
-      {
-        const { error } = await supabase
-          .from('artist_member_splits')
-          .delete()
-          .eq('artist_id', artist.id);
-        if (error) throw error;
-      }
-
-      // 4) miembros
-      {
-        const { error } = await supabase
-          .from('artist_members')
-          .delete()
-          .eq('artist_id', artist.id);
-        if (error) throw error;
-      }
-
-      // 5) economics
-      {
-        const { error } = await supabase
-          .from('artist_economics')
-          .delete()
-          .eq('artist_id', artist.id);
-        if (error) throw error;
-      }
-
-      // 6) ARTISTA
-      {
-        const { error } = await supabase
-          .from('artists')
-          .delete()
-          .eq('id', artist.id);
-        if (error) throw error;
-      }
-
-      // 7) verificación
-      const { data: still, error: selErr } = await supabase
-        .from('artists')
-        .select('id')
-        .eq('id', artist.id)
-        .maybeSingle();
-      if (selErr) throw selErr;
-      if (still) {
-        alert('El artista sigue existiendo (probable FK o RLS). Revisa policies/children.');
-        return;
-      }
-
+      window.location.href = '/artists/archived';
+    } catch (e:any) {
+      alert('No se pudo borrar: ' + (e.message || e));
+    }
+  }
       window.location.href = '/artists/archived';
     } catch (e:any) {
       alert('No se pudo borrar: ' + (e.message || e));
