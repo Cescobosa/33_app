@@ -1,82 +1,60 @@
 // pages/artists/index.tsx
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
-import { supabase } from '../../lib/supabaseClient';
 import Layout from '../../components/Layout';
+import { supabase } from '../../lib/supabaseClient';
+import { matches } from '../../lib/search';
 import Button from '../../components/Button';
+import Link from 'next/link';
 
-type ArtistLite = {
+type Artist = {
   id: string;
-  stage_name: string | null;
+  stage_name: string;
   photo_url: string | null;
-  contract_type: 'General' | 'Booking' | null;
-  is_group: boolean | null;
-  is_archived?: boolean | null;
-  is_deleted?: boolean | null;
+  is_archived: boolean | null;
 };
 
 export default function ArtistsIndex() {
-  const [all, setAll] = useState<ArtistLite[]>([]);
+  const [rows, setRows] = useState<Artist[]>([]);
   const [q, setQ] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string|null>(null);
 
   async function load() {
-    setLoading(true); setErr(null);
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('artists')
-      .select('id, stage_name, photo_url, contract_type, is_group, is_archived, is_deleted')
-      .neq('is_deleted', true)     // ⬅️ NO eliminados
-      .neq('is_archived', true)    // ⬅️ NO archivados
-      .order('stage_name', { ascending: true });
-    if (error) setErr(error.message);
-    setAll(data || []);
-    setLoading(false);
+      .select('id, stage_name, photo_url, is_archived')
+      .is('is_archived', false)
+      .order('stage_name', { ascending:true });
+    setRows((data||[]) as any);
   }
+  useEffect(()=>{ load(); }, []);
 
-  useEffect(() => { load(); }, []);
-
-  const filtered = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    if (!t) return all;
-    return all.filter(a => (a.stage_name || '').toLowerCase().includes(t));
-  }, [q, all]);
+  const filtered = useMemo(() =>
+    rows.filter(a => matches(a.stage_name, q))
+  , [rows, q]);
 
   return (
     <Layout>
-      <div style={{display:'flex', justifyContent:'flex-end', gap:8, marginBottom:8}}>
-        <Link href="/artists/archived"><Button>Artistas archivados</Button></Link>
-        <Link href="/artists/new"><Button icon="plus">Añadir artista</Button></Link>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
+        <input placeholder="Buscar artista…" value={q} onChange={e=>setQ(e.target.value)} />
+        <div style={{display:'flex', gap:8}}>
+          <Button as="a" href="/artists/archived" tone="neutral">Artistas archivados</Button>
+          <Button as="a" href="/artists/new">+ Añadir artista</Button>
+        </div>
       </div>
 
       <div className="module">
-        <h2>Artistas</h2>
-        <input
-          placeholder="Buscar artista…"
-          value={q}
-          onChange={e=>setQ(e.target.value)}
-          style={{width:'100%', marginBottom:12}}
-        />
-
-        {loading ? <div>Cargando…</div> : null}
-        {err ? <div style={{color:'#d42842'}}>Error: {err}</div> : null}
-
-        <div className="cards-grid">
-          {filtered.map(a => (
-            <Link key={a.id} href={`/artists/${a.id}`}>
-              <div className="card hover">
-                <div className="row" style={{alignItems:'center', gap:12}}>
-                  <div style={{width:56, height:56, borderRadius:12, background:'#f3f4f6', overflow:'hidden'}}>
-                    {a.photo_url ? <img src={a.photo_url} alt={a.stage_name || ''} style={{width:'100%', height:'100%', objectFit:'cover'}}/> : null}
-                  </div>
-                  <div style={{fontWeight:600}}>{a.stage_name || '—'}</div>
-                </div>
+        <h2 style={{marginTop:0}}>Artistas</h2>
+        <div style={{display:'grid', gap:12}}>
+          {filtered.map(a=>(
+            <Link key={a.id} href={`/artists/${a.id}`} className="card" style={{display:'flex', alignItems:'center', gap:12}}>
+              <div style={{width:56,height:56, borderRadius:12, overflow:'hidden', background:'#f3f4f6'}}>
+                {a.photo_url ? <img src={a.photo_url} alt={a.stage_name} style={{width:'100%',height:'100%',objectFit:'cover'}}/> : null}
               </div>
+              <div style={{fontWeight:600}}>{a.stage_name}</div>
             </Link>
           ))}
-          {(!loading && filtered.length===0) ? <small>No hay artistas.</small> : null}
+          {filtered.length===0 ? <small>No hay resultados.</small> : null}
         </div>
       </div>
     </Layout>
-  );
+  )
 }
