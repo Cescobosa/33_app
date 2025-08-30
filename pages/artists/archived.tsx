@@ -10,7 +10,6 @@ type Artist = {
   stage_name: string;
   photo_url: string | null;
   is_archived?: boolean | null;
-  archived?: boolean | null; // compatibilidad
 };
 
 export default function ArtistsArchived() {
@@ -22,12 +21,12 @@ export default function ArtistsArchived() {
   async function load() {
     setLoading(true); setErr(null);
     try {
-      // Archivados = is_archived=true OR archived=true (dato antiguo)
       const { data, error } = await supabase
         .from('artists')
-        .select('id, stage_name, photo_url, is_archived, archived')
-        .or('is_archived.is.true,archived.is.true')
+        .select('id, stage_name, photo_url, is_archived')
+        .eq('is_archived', true)
         .order('stage_name', { ascending: true });
+
       if (error) throw error;
       setRows(data || []);
     } catch (e: any) {
@@ -47,7 +46,7 @@ export default function ArtistsArchived() {
 
   return (
     <Layout>
-      {/* Botones arriba a la derecha */}
+      {/* Botones arriba a la derecha, misma estética */}
       <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginBottom:8 }}>
         <Button as="a" href="/artists" tone="neutral">Artistas activos</Button>
         <Button as="a" href="/artists/new" icon="plus">Añadir artista</Button>
