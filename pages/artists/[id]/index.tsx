@@ -134,7 +134,10 @@ export default function ArtistShow() {
 
   async function setArchived(value: boolean) {
     if (!artist) return;
-    const { error } = await supabase.from('artists').update({ archived:value }).eq('id', artist.id);
+    const { error } = await supabase
+      .from('artists')
+      .update({ is_archived: value })
+      .eq('id', artist.id);
     if (error) { alert('No se pudo actualizar: ' + error.message); return; }
     await loadAll();
   }
@@ -155,7 +158,7 @@ export default function ArtistShow() {
         if (error) throw error;
       }
   
-      // 1) terceros del artista: borrar contratos, economics y contactos de cada tercero y luego el tercero
+      // 1) terceros del artista -> borrar todo lo colgante y luego el tercero
       const { data: tps, error: tpsErr } = await supabase
         .from('third_parties')
         .select('id')
@@ -163,23 +166,16 @@ export default function ArtistShow() {
       if (tpsErr) throw tpsErr;
   
       for (const tp of (tps || [])) {
-        const delTPC = await supabase
-          .from('third_party_contracts')
-          .delete()
-          .eq('third_party_id', tp.id);
-        if (delTPC.error) throw delTPC.error;
+        let r;
   
-        const delTPE = await supabase
-          .from('third_party_economics')
-          .delete()
-          .eq('third_party_id', tp.id);
-        if (delTPE.error) throw delTPE.error;
+        r = await supabase.from('third_party_contracts').delete().eq('third_party_id', tp.id);
+        if (r.error) throw r.error;
   
-        const delTPCt = await supabase
-          .from('third_party_contacts')
-          .delete()
-          .eq('third_party_id', tp.id);
-        if (delTPCt.error) throw delTPCt.error;
+        r = await supabase.from('third_party_economics').delete().eq('third_party_id', tp.id);
+        if (r.error) throw r.error;
+  
+        r = await supabase.from('third_party_contacts').delete().eq('third_party_id', tp.id);
+        if (r.error) throw r.error;
       }
   
       {
@@ -190,7 +186,18 @@ export default function ArtistShow() {
         if (error) throw error;
       }
   
-      // 2) splits de miembros (tabla puente)
+      // 2) perfiles de miembros (si existe la tabla en tu proyecto)
+      try {
+        const r = await supabase
+          .from('artist_member_profiles')
+          .delete()
+          .eq('artist_id', artist.id);
+        if (r.error && !`${r.error.message}`.includes('relation') ) throw r.error;
+      } catch (e:any) {
+        if (!`${e?.message||''}`.includes('relation')) throw e;
+      }
+  
+      // 3) splits de miembros
       {
         const { error } = await supabase
           .from('artist_member_splits')
@@ -199,7 +206,7 @@ export default function ArtistShow() {
         if (error) throw error;
       }
   
-      // 3) miembros
+      // 4) miembros
       {
         const { error } = await supabase
           .from('artist_members')
@@ -208,7 +215,7 @@ export default function ArtistShow() {
         if (error) throw error;
       }
   
-      // 4) economics
+      // 5) economics
       {
         const { error } = await supabase
           .from('artist_economics')
@@ -217,7 +224,7 @@ export default function ArtistShow() {
         if (error) throw error;
       }
   
-      // 5) por último, el propio artista
+      // 6) ARTISTA (requiere policy DELETE con is_archived = true)
       {
         const { error } = await supabase
           .from('artists')
@@ -226,9 +233,20 @@ export default function ArtistShow() {
         if (error) throw error;
       }
   
-      // si todo fue bien, salimos del detalle
+      // 7) verificación: ¿ya no existe?
+      const { data: still, error: selErr } = await supabase
+        .from('artists')
+        .select('id')
+        .eq('id', artist.id)
+        .maybeSingle();
+      if (selErr) throw selErr;
+      if (still) {
+        alert('El artista sigue existiendo (probable FK o RLS). Revisa policies/children.');
+        return;
+      }
+  
       window.location.href = '/artists/archived';
-    } catch (e: any) {
+    } catch (e:any) {
       alert('No se pudo borrar: ' + (e.message || e));
     }
   }
