@@ -23,7 +23,10 @@ type Artist = {
   tax_id: string | null;
   tax_address: string | null;
   iban: string | null;
+
+  // Compatibilidad: algunos entornos usan 'archived', otros 'is_archived'
   archived?: boolean | null;
+  is_archived?: boolean | null;
 };
 
 type Member = {
@@ -132,22 +135,23 @@ export default function ArtistShow() {
 
   useEffect(()=>{ loadAll(); }, [id]);
 
+  // Archivar / recuperar — escribe en ambas columnas por compatibilidad
   async function setArchived(value: boolean) {
     if (!artist) return;
     const { error } = await supabase
       .from('artists')
-      .update({ is_archived: value })
+      .update({ is_archived: value, archived: value })
       .eq('id', artist.id);
     if (error) { alert('No se pudo actualizar: ' + error.message); return; }
     await loadAll();
   }
 
-  // ✅ Reescrito: elimina en orden, con await (sin array de promesas / sin builders)
+  // Borrado definitivo (con orden seguro y control de errores)
   async function hardDelete() {
     if (!artist) return;
     const sure = prompt('Escribe ELIMINAR para borrar definitivamente este artista');
     if (sure !== 'ELIMINAR') return;
-  
+
     try {
       // 0) contratos del artista
       {
@@ -157,27 +161,26 @@ export default function ArtistShow() {
           .eq('artist_id', artist.id);
         if (error) throw error;
       }
-  
-      // 1) terceros del artista -> borrar todo lo colgante y luego el tercero
+
+      // 1) terceros del artista -> borrar colgantes y luego el tercero
       const { data: tps, error: tpsErr } = await supabase
         .from('third_parties')
         .select('id')
         .eq('artist_id', artist.id);
       if (tpsErr) throw tpsErr;
-  
+
       for (const tp of (tps || [])) {
         let r;
-  
         r = await supabase.from('third_party_contracts').delete().eq('third_party_id', tp.id);
         if (r.error) throw r.error;
-  
+
         r = await supabase.from('third_party_economics').delete().eq('third_party_id', tp.id);
         if (r.error) throw r.error;
-  
+
         r = await supabase.from('third_party_contacts').delete().eq('third_party_id', tp.id);
         if (r.error) throw r.error;
       }
-  
+
       {
         const { error } = await supabase
           .from('third_parties')
@@ -185,18 +188,18 @@ export default function ArtistShow() {
           .eq('artist_id', artist.id);
         if (error) throw error;
       }
-  
-      // 2) perfiles de miembros (si existe la tabla en tu proyecto)
+
+      // 2) perfiles de miembros (si existe la tabla)
       try {
         const r = await supabase
           .from('artist_member_profiles')
           .delete()
           .eq('artist_id', artist.id);
-        if (r.error && !`${r.error.message}`.includes('relation') ) throw r.error;
+        if (r.error && !`${r.error.message}`.includes('relation')) throw r.error;
       } catch (e:any) {
         if (!`${e?.message||''}`.includes('relation')) throw e;
       }
-  
+
       // 3) splits de miembros
       {
         const { error } = await supabase
@@ -205,7 +208,7 @@ export default function ArtistShow() {
           .eq('artist_id', artist.id);
         if (error) throw error;
       }
-  
+
       // 4) miembros
       {
         const { error } = await supabase
@@ -214,7 +217,7 @@ export default function ArtistShow() {
           .eq('artist_id', artist.id);
         if (error) throw error;
       }
-  
+
       // 5) economics
       {
         const { error } = await supabase
@@ -223,8 +226,8 @@ export default function ArtistShow() {
           .eq('artist_id', artist.id);
         if (error) throw error;
       }
-  
-      // 6) ARTISTA (requiere policy DELETE con is_archived = true)
+
+      // 6) ARTISTA
       {
         const { error } = await supabase
           .from('artists')
@@ -232,8 +235,8 @@ export default function ArtistShow() {
           .eq('id', artist.id);
         if (error) throw error;
       }
-  
-      // 7) verificación: ¿ya no existe?
+
+      // 7) verificación
       const { data: still, error: selErr } = await supabase
         .from('artists')
         .select('id')
@@ -244,13 +247,14 @@ export default function ArtistShow() {
         alert('El artista sigue existiendo (probable FK o RLS). Revisa policies/children.');
         return;
       }
-  
+
       window.location.href = '/artists/archived';
     } catch (e:any) {
       alert('No se pudo borrar: ' + (e.message || e));
     }
   }
 
+  // Desvincular (no borrar) un tercero: mantiene histórico en su ficha
   async function unlinkThird(thirdId: string) {
     if (!artist) return;
     const ok = confirm('¿Desvincular este tercero del artista? Se conservará el histórico en su ficha.');
@@ -274,6 +278,9 @@ export default function ArtistShow() {
   if (loading) return <Layout><div className="module">Cargando…</div></Layout>;
   if (err || !artist) return <Layout><div className="module" style={{color:'#d42842'}}>Error: {err || 'No encontrado'}</div></Layout>;
 
+  // Normalización: usar un único flag derivado
+  const isArchived = (artist as any).is_archived ?? (artist as any).archived ?? false;
+
   return (
     <Layout>
       {/* Cabecera: foto + nombre + botones EDITAR/ARCHIVAR/BORRAR */}
@@ -293,16 +300,16 @@ export default function ArtistShow() {
             <div style={{ color: '#6b7280', marginTop: 4 }}>
               Contrato: <strong>{artist.contract_type}</strong> &nbsp;·&nbsp; {artist.is_group ? 'Grupo' : 'Solista'}
             </div>
-            {artist.is_archived ? (
+            {isArchived ? (
               <div style={{ color:'#b91c1c', fontSize:12, marginTop:4 }}>Archivado</div>
             ) : null}
           </div>
         </div>
-      
+
         {/* Botones de acción */}
         <div style={{ display:'flex', gap:8 }}>
           <Button as="a" href={`/artists/${artist.id}/edit`} tone="neutral">Editar</Button>
-          {artist.is_archived ? (
+          {isArchived ? (
             <>
               <Button onClick={()=>setArchived(false)}>Recuperar</Button>
               <Button tone="danger" onClick={hardDelete}>Borrar</Button>
