@@ -1,66 +1,83 @@
-import { useEffect, useMemo, useState } from 'react';
-import { supabase } from '../../../lib/supabaseClient';
+// pages/partners/thirds/index.tsx
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import Layout from '../../../components/Layout';
+import Button from '../../../components/Button';
+import { supabase } from '../../../lib/supabaseClient';
 
 type Row = {
   id: string;
   nick: string|null;
   name: string|null;
   logo_url: string|null;
-  is_active: boolean;
+  unlinked: boolean|null;
+  unlinked_at: string|null;
+  unlinked_from_artist_id: string|null;
 };
 
-export default function ThirdsIndex() {
-  const [list, setList] = useState<Row[]>([]);
+export default function ThirdsIndex(){
+  const [rows, setRows] = useState<Row[]>([]);
   const [q, setQ] = useState('');
+  const [loading, setLoading] = useState(true);
 
   async function load() {
-    const { data, error } = await supabase
+    setLoading(true);
+    const { data } = await supabase
       .from('third_parties')
-      .select('id, nick, name, logo_url, is_active, kind')
+      .select('id, nick, name, logo_url, unlinked, unlinked_at, unlinked_from_artist_id')
       .order('nick', { ascending: true });
-    if (error) { alert(error.message); return; }
-    // Acepta antiguos registros con kind null como terceros
-    const rows = (data || []).filter((r:any)=> (r.kind ?? 'third') === 'third');
-    setList(rows as any);
+    setRows(data as any || []);
+    setLoading(false);
   }
-
   useEffect(()=>{ load(); }, []);
 
-  const filtered = useMemo(()=>{
-    const t = (q||'').toLowerCase();
-    if (!t) return list;
-    return list.filter(r =>
-      (r.nick||'').toLowerCase().includes(t) ||
-      (r.name||'').toLowerCase().includes(t)
-    );
-  }, [q, list]);
+  const filtered = rows.filter(r=>{
+    const s = `${r.nick||''} ${r.name||''}`.toLowerCase();
+    return s.includes(q.toLowerCase());
+  });
 
   return (
     <Layout>
-      <h1>Terceros</h1>
-
-      <div className="module">
-        <div className="row" style={{ alignItems:'center' }}>
-          <div style={{ flex:'1 1 420px' }}>
-            <input placeholder="Buscar por nick o nombre…" value={q} onChange={e=>setQ(e.target.value)} />
-          </div>
-          {/* Sin botón de crear: terceros se crean desde la ficha del artista */}
-        </div>
+      <div className="module" style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+        <h1 style={{margin:0}}>Terceros</h1>
+        <Button as="a" href="/partners/providers/new">+ Añadir proveedor</Button>
       </div>
 
       <div className="module">
-        {filtered.length === 0 ? <small>No hay terceros.</small> : null}
-        {filtered.map(r=>(
-          <div key={r.id} className="row" style={{ borderTop:'1px solid #e5e7eb', padding:'8px 0', alignItems:'center' }}>
-            <div style={{ width:48, height:48, borderRadius:12, overflow:'hidden', background:'#f3f4f6' }}>
-              {r.logo_url && <img src={r.logo_url} alt={r.nick || r.name || 'tercero'} style={{ width:'100%', height:'100%', objectFit:'cover' }}/>}
+        <input
+          placeholder="Buscar por nick o nombre…"
+          value={q}
+          onChange={e=>setQ(e.target.value)}
+          style={{width:'100%'}}
+        />
+      </div>
+
+      <div className="module">
+        {loading ? 'Cargando…' : (
+          filtered.length===0 ? <small>No hay resultados.</small> : (
+            <div className="grid" style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(260px, 1fr))', gap:12}}>
+              {filtered.map(r=>(
+                <Link key={r.id} href={`/partners/thirds/${r.id}`} className="card"
+                  style={r.unlinked ? {border:'1px solid #ef4444'} : undefined}
+                >
+                  <div style={{display:'flex', gap:10, alignItems:'center'}}>
+                    <div style={{ width: 48, height: 48, borderRadius: 12, overflow:'hidden', background:'#f3f4f6' }}>
+                      {r.logo_url && <img src={r.logo_url} alt={r.nick || r.name || 'logo'} style={{width:'100%', height:'100%', objectFit:'cover'}}/>}
+                    </div>
+                    <div>
+                      <div style={{fontWeight:600}}>{r.nick || r.name || 'Sin nombre'}</div>
+                      {r.unlinked ? (
+                        <div style={{fontSize:12, color:'#b91c1c'}}>
+                          Desvinculado {r.unlinked_at ? `· ${new Date(r.unlinked_at).toLocaleDateString()}` : ''}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </Link>
+              ))}
             </div>
-            <div style={{ flex:'1 1 auto' }}>
-              <a href={`/partners/thirds/${r.id}`} style={{ fontWeight:600 }}>{r.nick || r.name || 'Sin nombre'}</a>
-            </div>
-          </div>
-        ))}
+          )
+        )}
       </div>
     </Layout>
   );
