@@ -1,83 +1,61 @@
 // pages/partners/thirds/index.tsx
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
 import Layout from '../../../components/Layout';
-import Button from '../../../components/Button';
 import { supabase } from '../../../lib/supabaseClient';
+import { matches } from '../../../lib/search';
+import Link from 'next/link';
+import Button from '../../../components/Button';
 
 type Row = {
   id: string;
-  nick: string|null;
-  name: string|null;
-  logo_url: string|null;
-  unlinked: boolean|null;
-  unlinked_at: string|null;
-  unlinked_from_artist_id: string|null;
+  kind: 'third'|'provider';
+  nick: string | null;
+  name: string | null;
+  logo_url: string | null;
+  is_active: boolean | null;
 };
 
-export default function ThirdsIndex(){
+export default function ThirdsIndex() {
   const [rows, setRows] = useState<Row[]>([]);
   const [q, setQ] = useState('');
-  const [loading, setLoading] = useState(true);
 
   async function load() {
-    setLoading(true);
     const { data } = await supabase
       .from('third_parties')
-      .select('id, nick, name, logo_url, unlinked, unlinked_at, unlinked_from_artist_id')
-      .order('nick', { ascending: true });
-    setRows(data as any || []);
-    setLoading(false);
+      .select('id, kind, nick, name, logo_url, is_active')
+      .eq('kind','third')
+      .neq('is_active', false)              -- no mostrar eliminados
+      .order('created_at', { ascending:false });
+    setRows((data||[]) as any);
   }
   useEffect(()=>{ load(); }, []);
 
-  const filtered = rows.filter(r=>{
-    const s = `${r.nick||''} ${r.name||''}`.toLowerCase();
-    return s.includes(q.toLowerCase());
-  });
+  const filtered = useMemo(()=> rows.filter(
+    r => matches(r.nick, q) || matches(r.name, q)
+  ), [rows, q]);
 
   return (
     <Layout>
-      <div className="module" style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-        <h1 style={{margin:0}}>Terceros</h1>
-        <Button as="a" href="/partners/providers/new">+ Añadir proveedor</Button>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
+        <input placeholder="Buscar tercero…" value={q} onChange={e=>setQ(e.target.value)} />
+        <div>
+          {/* aquí no se crean terceros “sueltos”; se crean desde la ficha de artista */}
+        </div>
       </div>
 
       <div className="module">
-        <input
-          placeholder="Buscar por nick o nombre…"
-          value={q}
-          onChange={e=>setQ(e.target.value)}
-          style={{width:'100%'}}
-        />
-      </div>
-
-      <div className="module">
-        {loading ? 'Cargando…' : (
-          filtered.length===0 ? <small>No hay resultados.</small> : (
-            <div className="grid" style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(260px, 1fr))', gap:12}}>
-              {filtered.map(r=>(
-                <Link key={r.id} href={`/partners/thirds/${r.id}`} className="card"
-                  style={r.unlinked ? {border:'1px solid #ef4444'} : undefined}
-                >
-                  <div style={{display:'flex', gap:10, alignItems:'center'}}>
-                    <div style={{ width: 48, height: 48, borderRadius: 12, overflow:'hidden', background:'#f3f4f6' }}>
-                      {r.logo_url && <img src={r.logo_url} alt={r.nick || r.name || 'logo'} style={{width:'100%', height:'100%', objectFit:'cover'}}/>}
-                    </div>
-                    <div>
-                      <div style={{fontWeight:600}}>{r.nick || r.name || 'Sin nombre'}</div>
-                      {r.unlinked ? (
-                        <div style={{fontSize:12, color:'#b91c1c'}}>
-                          Desvinculado {r.unlinked_at ? `· ${new Date(r.unlinked_at).toLocaleDateString()}` : ''}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )
-        )}
+        <h2 style={{marginTop:0}}>Terceros</h2>
+        <div style={{display:'grid', gap:12}}>
+          {filtered.map(t=>(
+            <Link key={t.id} href={`/partners/thirds/${t.id}`} className="card" style={{display:'flex',alignItems:'center',gap:12}}>
+              <div style={{width:56,height:56,borderRadius:12,overflow:'hidden',background:'#f3f4f6'}}>
+                {t.logo_url ? <img src={t.logo_url} alt={t.nick||t.name||''} style={{width:'100%',height:'100%',objectFit:'cover'}}/> : null}
+              </div>
+              <div style={{fontWeight:600}}>{t.nick || t.name || 'Sin nombre'}</div>
+            </Link>
+          ))}
+          {filtered.length===0 ? <small>No hay resultados.</small> : null}
+        </div>
       </div>
     </Layout>
   );
