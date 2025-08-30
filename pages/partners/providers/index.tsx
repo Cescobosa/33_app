@@ -1,68 +1,61 @@
+// pages/partners/thirds/index.tsx
 import { useEffect, useMemo, useState } from 'react';
-import { supabase } from '../../../lib/supabaseClient';
 import Layout from '../../../components/Layout';
+import { supabase } from '../../../lib/supabaseClient';
+import { matches } from '../../../lib/search';
+import Link from 'next/link';
 import Button from '../../../components/Button';
 
 type Row = {
   id: string;
-  nick: string|null;
-  name: string|null;
-  logo_url: string|null;
-  is_active: boolean;
+  kind: 'third'|'provider';
+  nick: string | null;
+  name: string | null;
+  logo_url: string | null;
+  is_active: boolean | null;
 };
 
-export default function ProvidersIndex() {
-  const [list, setList] = useState<Row[]>([]);
+export default function ThirdsIndex() {
+  const [rows, setRows] = useState<Row[]>([]);
   const [q, setQ] = useState('');
 
   async function load() {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('third_parties')
-      .select('id, nick, name, logo_url, is_active, kind')
-      .order('nick', { ascending: true });
-    if (error) { alert(error.message); return; }
-    const rows = (data || []).filter((r:any)=> r.kind === 'provider');
-    setList(rows as any);
+      .select('id, kind, nick, name, logo_url, is_active')
+      .eq('kind','provider')
+      .neq('is_active', false)              -- no mostrar eliminados
+      .order('created_at', { ascending:false });
+    setRows((data||[]) as any);
   }
-
   useEffect(()=>{ load(); }, []);
 
-  const filtered = useMemo(()=>{
-    const t = (q||'').toLowerCase();
-    if (!t) return list;
-    return list.filter(r =>
-      (r.nick||'').toLowerCase().includes(t) ||
-      (r.name||'').toLowerCase().includes(t)
-    );
-  }, [q, list]);
+  const filtered = useMemo(()=> rows.filter(
+    r => matches(r.nick, q) || matches(r.name, q)
+  ), [rows, q]);
 
   return (
     <Layout>
-      <h1>Proveedores</h1>
-
-      <div className="module">
-        <div className="row" style={{ alignItems:'center' }}>
-          <div style={{ flex:'1 1 420px' }}>
-            <input placeholder="Buscar por nick o nombre…" value={q} onChange={e=>setQ(e.target.value)} />
-          </div>
-          <div style={{ marginLeft:'auto' }}>
-            <Button as="a" href="/partners/providers/new">+ Añadir proveedor</Button>
-          </div>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
+        <input placeholder="Buscar tercero…" value={q} onChange={e=>setQ(e.target.value)} />
+        <div>
+          {/* aquí no se crean terceros “sueltos”; se crean desde la ficha de artista */}
         </div>
       </div>
 
       <div className="module">
-        {filtered.length === 0 ? <small>No hay proveedores.</small> : null}
-        {filtered.map(r=>(
-          <div key={r.id} className="row" style={{ borderTop:'1px solid #e5e7eb', padding:'8px 0', alignItems:'center' }}>
-            <div style={{ width:48, height:48, borderRadius:12, overflow:'hidden', background:'#f3f4f6' }}>
-              {r.logo_url && <img src={r.logo_url} alt={r.nick || r.name || 'proveedor'} style={{ width:'100%', height:'100%', objectFit:'cover' }}/>}
-            </div>
-            <div style={{ flex:'1 1 auto' }}>
-              <a href={`/partners/providers/${r.id}`} style={{ fontWeight:600 }}>{r.nick || r.name || 'Sin nombre'}</a>
-            </div>
-          </div>
-        ))}
+        <h2 style={{marginTop:0}}>Terceros</h2>
+        <div style={{display:'grid', gap:12}}>
+          {filtered.map(t=>(
+            <Link key={t.id} href={`/partners/thirds/${t.id}`} className="card" style={{display:'flex',alignItems:'center',gap:12}}>
+              <div style={{width:56,height:56,borderRadius:12,overflow:'hidden',background:'#f3f4f6'}}>
+                {t.logo_url ? <img src={t.logo_url} alt={t.nick||t.name||''} style={{width:'100%',height:'100%',objectFit:'cover'}}/> : null}
+              </div>
+              <div style={{fontWeight:600}}>{t.nick || t.name || 'Sin nombre'}</div>
+            </Link>
+          ))}
+          {filtered.length===0 ? <small>No hay resultados.</small> : null}
+        </div>
       </div>
     </Layout>
   );
