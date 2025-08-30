@@ -147,74 +147,19 @@ export default function ArtistShow() {
   // Borrado definitivo (requiere is_archived = true por policy)
   async function hardDelete() {
     if (!artist) return;
-    const sure = prompt('Escribe ELIMINAR para borrar definitivamente este artista');
+    const sure = prompt('Escribe ELIMINAR para borrar definitivamente este artista (borrado lógico).');
     if (sure !== 'ELIMINAR') return;
-
+  
     try {
-      // 0) limpiar referencias históricas (bloqueo típico)
-      {
-        const { error } = await supabase
-          .from('third_parties')
-          .update({ unlinked_from_artist_id: null })
-          .eq('unlinked_from_artist_id', artist.id);
-        if (error) throw error;
-      }
-
-      // 1) contratos del artista
-      {
-        const { error } = await supabase.from('artist_contracts').delete().eq('artist_id', artist.id);
-        if (error) throw error;
-      }
-
-      // 2) terceros del artista -> borrar contratos/econ/contacts, luego terceros
-      const { data: tps, error: tpsErr } = await supabase
-        .from('third_parties').select('id').eq('artist_id', artist.id);
-      if (tpsErr) throw tpsErr;
-
-      for (const tp of (tps || [])) {
-        let r;
-        r = await supabase.from('third_party_contracts').delete().eq('third_party_id', tp.id);
-        if (r.error) throw r.error;
-        r = await supabase.from('third_party_economics').delete().eq('third_party_id', tp.id);
-        if (r.error) throw r.error;
-        r = await supabase.from('third_party_contacts').delete().eq('third_party_id', tp.id);
-        if (r.error) throw r.error;
-      }
-      {
-        const { error } = await supabase.from('third_parties').delete().eq('artist_id', artist.id);
-        if (error) throw error;
-      }
-
-      // 3) splits de miembros
-      {
-        const { error } = await supabase.from('artist_member_splits').delete().eq('artist_id', artist.id);
-        if (error) throw error;
-      }
-      // 4) miembros
-      {
-        const { error } = await supabase.from('artist_members').delete().eq('artist_id', artist.id);
-        if (error) throw error;
-      }
-      // 5) economics
-      {
-        const { error } = await supabase.from('artist_economics').delete().eq('artist_id', artist.id);
-        if (error) throw error;
-      }
-
-      // 6) borrar artista (policy exige is_archived = true)
-      {
-        const { error } = await supabase.from('artists').delete().eq('id', artist.id);
-        if (error) throw error;
-      }
-
-      // 7) comprobación
-      const { data: still } = await supabase.from('artists').select('id').eq('id', artist.id).maybeSingle();
-      if (still) {
-        alert('El artista sigue existiendo (probable FK o RLS). Revisa policies o hijos.');
-        return;
-      }
-      window.location.href = '/artists/archived';
-    } catch (e:any) {
+      // llamamos a la RPC que hace el borrado lógico
+      const { error } = await supabase.rpc('soft_delete_artist', { aid: artist.id });
+      if (error) throw error;
+  
+      alert('Artista eliminado (borrado lógico).');
+      // al tener RLS de select que oculta is_deleted = true,
+      // redirigimos para que "desaparezca" del sistema
+      window.location.href = '/artists';
+    } catch (e: any) {
       alert('No se pudo borrar: ' + (e.message || e));
     }
   }
