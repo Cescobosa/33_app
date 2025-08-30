@@ -10,7 +10,6 @@ type Artist = {
   stage_name: string;
   photo_url: string | null;
   is_archived?: boolean | null;
-  archived?: boolean | null; // por compatibilidad con datos antiguos
 };
 
 export default function ArtistsIndex() {
@@ -22,12 +21,13 @@ export default function ArtistsIndex() {
   async function load() {
     setLoading(true); setErr(null);
     try {
-      // Activos = is_archived=false OR is_archived NULL OR archived=false (dato antiguo)
+      // Sólo usamos is_archived (archived ya no existe)
       const { data, error } = await supabase
         .from('artists')
-        .select('id, stage_name, photo_url, is_archived, archived')
-        .or('is_archived.is.false,is_archived.is.null,archived.is.false')
+        .select('id, stage_name, photo_url, is_archived')
+        .or('is_archived.is.false,is_archived.is.null') // por si alguna fila quedó NULL
         .order('stage_name', { ascending: true });
+
       if (error) throw error;
       setRows(data || []);
     } catch (e: any) {
