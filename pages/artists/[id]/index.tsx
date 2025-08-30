@@ -147,42 +147,37 @@ export default function ArtistShow() {
   }
 
   // Borrado definitivo (con orden seguro y control de errores)
-    // Borrado definitivo (orden seguro, sin tabla inexistente)
+  // Borrado definitivo (orden seguro, sin tabla inexistente)
   async function hardDelete() {
     if (!artist) return;
     const sure = prompt('Escribe ELIMINAR para borrar definitivamente este artista');
     if (sure !== 'ELIMINAR') return;
-
+  
     try {
       await supabase.from('artist_contracts').delete().eq('artist_id', artist.id);
-
+  
       const { data: tps, error: tpsErr } = await supabase
         .from('third_parties')
         .select('id')
         .eq('artist_id', artist.id);
       if (tpsErr) throw tpsErr;
-
+  
       for (const tp of (tps || [])) {
         await supabase.from('third_party_contracts').delete().eq('third_party_id', tp.id);
         await supabase.from('third_party_economics').delete().eq('third_party_id', tp.id);
         await supabase.from('third_party_contacts').delete().eq('third_party_id', tp.id);
       }
       await supabase.from('third_parties').delete().eq('artist_id', artist.id);
-
+  
       await supabase.from('artist_member_splits').delete().eq('artist_id', artist.id);
       await supabase.from('artist_members').delete().eq('artist_id', artist.id);
       await supabase.from('artist_economics').delete().eq('artist_id', artist.id);
-
+  
       const { error } = await supabase.from('artists').delete().eq('id', artist.id);
       if (error) throw error;
-
+  
       window.location.href = '/artists/archived';
-    } catch (e:any) {
-      alert('No se pudo borrar: ' + (e.message || e));
-    }
-  }
-      window.location.href = '/artists/archived';
-    } catch (e:any) {
+    } catch (e: any) {
       alert('No se pudo borrar: ' + (e.message || e));
     }
   }
