@@ -1,37 +1,63 @@
-import React from 'react';
+// components/Button.tsx
+import * as React from 'react';
 
 type Tone = 'primary' | 'neutral' | 'danger';
 
-type Props = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+type Common = {
   tone?: Tone;
-  icon?: React.ReactNode;
-  as?: 'button' | 'a';
-  href?: string;
+  icon?: 'plus' | 'trash' | 'archive' | 'edit' | 'restore' | 'link' | 'warning';
+  className?: string;
+  children: React.ReactNode;
+  style?: React.CSSProperties;
 };
 
-const stylesBase =
-  'inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition';
-const toneClass = (tone: Tone) =>
-  tone === 'primary'
-    ? 'bg-[#d42842] text-white hover:opacity-90'
-    : tone === 'danger'
-    ? 'bg-red-600 text-white hover:opacity-90'
-    : 'bg-gray-200 text-gray-800 hover:bg-gray-300';
+type BtnProps =
+  | (Common & React.ButtonHTMLAttributes<HTMLButtonElement> & { as?: 'button'; href?: never })
+  | (Common & React.AnchorHTMLAttributes<HTMLAnchorElement> & { as: 'a'; href: string });
 
-export default function Button({ tone = 'primary', icon, className = '', children, as='button', href, ...rest }: Props) {
-  const cls = `${stylesBase} ${toneClass(tone)} ${className}`;
+function cls(tone: Tone = 'primary') {
+  const base =
+    'inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-colors';
+  const map: Record<Tone, string> = {
+    primary: 'bg-[#d42842] text-white hover:opacity-90',
+    neutral: 'bg-gray-200 text-gray-900 hover:bg-gray-300',
+    danger: 'bg-red-600 text-white hover:bg-red-700',
+  };
+  return `${base} ${map[tone]}`;
+}
 
-  if (as === 'a') {
+function Icon({ name }: { name?: string }) {
+  if (!name) return null;
+  const map: Record<string, string> = {
+    plus: '➕',
+    trash: '🗑️',
+    archive: '🗄️',
+    edit: '✏️',
+    restore: '♻️',
+    link: '🔗',
+    warning: '⚠️',
+  };
+  return <span aria-hidden>{map[name] ?? ''}</span>;
+}
+
+export default function Button(props: BtnProps) {
+  const { tone, icon, className, children, style, ...rest } = props as any;
+  const classNames = `${cls(tone)} ${className ?? ''}`;
+
+  if (props.as === 'a') {
+    const aProps = rest as React.AnchorHTMLAttributes<HTMLAnchorElement>;
     return (
-      <a href={href} className={cls}>
-        {icon}
+      <a {...aProps} className={classNames} style={style}>
+        <Icon name={icon} />
         {children}
       </a>
     );
   }
+
+  const bProps = rest as React.ButtonHTMLAttributes<HTMLButtonElement>;
   return (
-    <button {...rest} className={cls}>
-      {icon}
+    <button {...bProps} className={classNames} style={style}>
+      <Icon name={icon} />
       {children}
     </button>
   );
