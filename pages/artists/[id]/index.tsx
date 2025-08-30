@@ -65,6 +65,7 @@ type Third = {
   unlinked?: boolean | null;
   unlinked_at?: string | null;
   unlinked_from_artist_id?: string | null;
+  unlinked_from_artist_name?: string | null;
 }
 
 type ThirdEcon = {
@@ -121,6 +122,7 @@ export default function ArtistShow() {
         id: row.id, artist_id: row.artist_id, kind: row.kind, nick: row.nick, name: row.name,
         email: row.email, phone: row.phone, logo_url: row.logo_url, is_active: row.is_active!==false,
         unlinked: row.unlinked, unlinked_at: row.unlinked_at, unlinked_from_artist_id: row.unlinked_from_artist_id,
+        unlinked_from_artist_name: row.unlinked_from_artist_name,
         econ: (row.third_party_economics||[]).filter((r:any)=>Number(r.third_pct||0) > 0)
       })));
     } catch (e:any) {
@@ -149,6 +151,15 @@ export default function ArtistShow() {
     if (sure !== 'ELIMINAR') return;
 
     try {
+      // 0) limpiar referencias históricas (bloqueo típico)
+      {
+        const { error } = await supabase
+          .from('third_parties')
+          .update({ unlinked_from_artist_id: null })
+          .eq('unlinked_from_artist_id', artist.id);
+        if (error) throw error;
+      }
+
       // 1) contratos del artista
       {
         const { error } = await supabase.from('artist_contracts').delete().eq('artist_id', artist.id);
@@ -218,7 +229,8 @@ export default function ArtistShow() {
         artist_id: null,
         unlinked: true,
         unlinked_at: new Date().toISOString(),
-        unlinked_from_artist_id: artist.id
+        unlinked_from_artist_id: artist.id,
+        unlinked_from_artist_name: artist.stage_name || null
       })
       .eq('id', thirdId);
     if (error) {
@@ -233,7 +245,7 @@ export default function ArtistShow() {
 
   return (
     <Layout>
-      {/* Cabecera: foto + nombre + botones */}
+      {/* Cabecera */}
       <div className="module" style={{display:'flex', alignItems:'center', gap:16, justifyContent:'space-between'}}>
         <div style={{display:'flex', alignItems:'center', gap:16}}>
           <div style={{ width: 96, height: 96, borderRadius: 16, overflow: 'hidden', background: '#f3f4f6' }}>
@@ -340,7 +352,6 @@ export default function ArtistShow() {
           </>
         )}
 
-        {/* Reparto grupo (si procede) */}
         {artist.is_group && members.length > 0 && (
           <div className="card" style={{ marginTop: 12, background: '#f9fafb' }}>
             <h3 style={{ marginTop: 0 }}>Reparto beneficio artista (grupo)</h3>
@@ -372,6 +383,11 @@ export default function ArtistShow() {
                 </Link>
                 <div style={{ color:'#6b7280', fontSize:12 }}>
                   {t.email || '—'} · {t.phone || '—'}
+                  {t.unlinked && t.unlinked_from_artist_name && t.unlinked_at ? (
+                    <span style={{marginLeft:8, color:'#b91c1c'}}>
+                      · Desvinculado de {t.unlinked_from_artist_name} desde {new Date(t.unlinked_at).toLocaleDateString()}
+                    </span>
+                  ) : null}
                 </div>
               </div>
               <div>
