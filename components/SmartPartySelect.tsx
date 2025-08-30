@@ -1,144 +1,151 @@
+// components/SmartPartySelect.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import Button from './Button';
-
-type Kind = 'third'|'provider';
-type Party = {
-  id: string;
-  kind: Kind;
-  nick: string|null;
-  name: string|null;
-  email: string|null;
-  phone: string|null;
-  logo_url: string|null;
-  tax_id: string|null;
-  tax_name: string|null;
-};
+import { matches, normalize } from '../lib/search';
 
 type Props = {
-  kind: Kind;                             // 'third' o 'provider'
-  onSelect: (p: Party) => void;           // devolvemos el existente o el recién creado
+  artistId: string;                 // artista al que se vincula
+  kind: 'third' | 'provider';       // tipo
+  onLinked?: () => void;            // callback tras crear/vincular
 };
 
-export default function SmartPartySelect({ kind, onSelect }: Props) {
-  const [q, setQ] = useState('');
-  const [rows, setRows] = useState<Party[]>([]);
-  const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({
-    nick:'', name:'', email:'', phone:'', tax_id:'', tax_name:'', tax_type:'particular' as 'particular'|'empresa'
-  });
-  const [err, setErr] = useState<string|null>(null);
+type Party = {
+  id: string;
+  artist_id: string | null;
+  kind: 'third' | 'provider';
+  nick: string | null;
+  name: string | null;
+  tax_id: string | null;
+  email: string | null;
+  phone: string | null;
+  logo_url: string | null;
+  is_active: boolean | null;
+};
 
-  // Buscar existentes por cualquier campo principal
-  async function search() {
-    let req = supabase.from('third_parties')
-      .select('id,kind,nick,name,email,phone,logo_url,tax_id,tax_name')
-      .eq('kind', kind)
-      .order('name', { ascending: true });
+export default function SmartPartySelect({ artistId, kind, onLinked }: Props) {
+  const [query, setQuery] = useState('');
+  const [existing, setExisting] = useState<Party[]>([]);
+  const [loading, setLoading] = useState(false);
 
-    if (q.trim()) {
-      const like = `%${q.trim()}%`;
-      req = req.or([
-        `nick.ilike.${like}`,
-        `name.ilike.${like}`,
-        `email.ilike.${like}`,
-        `phone.ilike.${like}`,
-        `tax_id.ilike.${like}`,
-        `tax_name.ilike.${like}`
-      ].join(','));
-    }
+  // “Nuevo” (crear directamente)
+  const [newNick, setNewNick] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newTax, setNewTax] = useState('');
+  const [saving, setSaving] = useState(false);
 
-    const { data } = await req;
-    setRows(data || []);
+  async function load() {
+    setLoading(true);
+    // Recupera terceros del propio artista para sugerir/reutilizar datos parecidos;
+    // y también terceros globales del mismo tipo sin filtrar (puedes limitar a 50 para no cargar demasiado).
+    const [a, b] = await Promise.all([
+      supabase.from('third_parties')
+        .select('*')
+        .eq('artist_id', artistId)
+        .eq('kind', kind)
+        .order('created_at', { ascending:false }),
+      supabase.from('third_parties')
+        .select('*')
+        .is('artist_id', null)
+        .eq('kind', kind)
+        .order('created_at', { ascending:false })
+        .limit(50)
+    ]);
+    const list = ([...(a.data||[]), ...(b.data||[])] as Party[])
+      .filter(p => p.is_active !== false);
+    setExisting(list);
+    setLoading(false);
   }
 
-  useEffect(()=>{ search(); }, [q, kind]);
+  useEffect(()=>{ load(); }, [artistId, kind]);
 
-  async function create() {
-    setErr(null);
+  const suggestions = useMemo(()=>{
+    if (!query.trim()) return existing.slice(0, 10);
+    return existing.filter(p =>
+      matches(p.nick, query) ||
+      matches(p.name, query) ||
+      matches(p.tax_id, query)
+    ).slice(0, 10);
+  }, [existing, query]);
+
+  async function linkExisting(id: string) {
+    // Vinculamos este registro al artista (si estuviera suelto).
+    const { error } = await supabase
+      .from('third_parties')
+      .update({ artist_id: artistId })
+      .eq('id', id);
+    if (error) return alert(error.message);
+    onLinked?.();
+    await load();
+  }
+
+  async function createNew() {
+    if (saving) return;
+    setSaving(true);
     try {
-      // anti-duplicados básico (nick, name o tax_id)
-      const dupLike = `%${(form.nick || form.name || form.tax_id).trim()}%`;
-      const { data: dup } = await supabase
+      // Evita colisiones de índice único si todo está vacío: metemos un nick “placeholder”
+      const safeNick = (newNick || newName || newTax) ? newNick : `[nuevo] ${Math.random().toString(36).slice(2,8)}`;
+      const ins = await supabase
         .from('third_parties')
-        .select('id,nick,name,tax_id')
-        .eq('kind', kind)
-        .or(`nick.ilike.${dupLike},name.ilike.${dupLike},tax_id.ilike.${dupLike}`)
-        .limit(1);
-      if (dup && dup.length) {
-        setErr(`Ya existe uno parecido: ${dup[0].nick || dup[0].name || dup[0].tax_id}`);
-        return;
-      }
-
-      const { data, error } = await supabase.from('third_parties').insert({
-        kind,
-        nick: form.nick || null,
-        name: form.name || null,
-        email: form.email || null,
-        phone: form.phone || null,
-        tax_id: form.tax_id || null,
-        tax_name: form.tax_name || (form.name || null),
-        tax_type: form.tax_type
-      }).select('id,kind,nick,name,email,phone,logo_url,tax_id,tax_name').single();
-      if (error) throw error;
-
-      onSelect(data as Party);
-      setCreating(false);
-      setForm({nick:'',name:'',email:'',phone:'',tax_id:'',tax_name:'',tax_type:'particular'});
-      setQ('');
-      await search();
+        .insert({
+          artist_id: artistId,
+          kind,
+          nick: safeNick || null,
+          name: newName || null,
+          tax_id: newTax || null,
+          is_active: true
+        })
+        .select('*')
+        .single();
+      if (ins.error) throw ins.error;
+      setNewNick(''); setNewName(''); setNewTax('');
+      onLinked?.();
+      await load();
     } catch (e:any) {
-      setErr(e.message || 'Error creando');
+      alert(e.message || 'No se pudo crear');
+    } finally {
+      setSaving(false);
     }
   }
 
   return (
-    <div>
-      {!creating ? (
-        <>
-          <div className="row" style={{alignItems:'center', gap:8}}>
-            <div style={{flex:'1 1 420px'}}>
-              <input placeholder={`Buscar ${kind==='third'?'tercero':'proveedor'} por cualquier dato…`} value={q} onChange={e=>setQ(e.target.value)} />
-            </div>
-            <Button onClick={()=>setCreating(true)}>+ Crear nuevo</Button>
-          </div>
-          <div style={{marginTop:8}}>
-            {rows.slice(0,8).map(p=>(
-              <div key={p.id} className="list-item" style={{display:'flex', justifyContent:'space-between', padding:'6px 8px', borderBottom:'1px solid #eee', cursor:'pointer'}}
-                   onClick={()=>onSelect(p)}>
-                <div>
-                  <strong>{p.nick || p.name || 'Sin nombre'}</strong>
-                  <div style={{fontSize:12, color:'#6b7280'}}>{[p.email, p.phone, p.tax_id].filter(Boolean).join(' · ') || '—'}</div>
-                </div>
-                <div style={{fontSize:12, color:'#6b7280'}}>Seleccionar</div>
+    <div className="card">
+      <div className="row" style={{alignItems:'flex-end'}}>
+        <div style={{flex:'1 1 360px'}}>
+          <label>Buscar {kind==='third' ? 'tercero' : 'proveedor'}</label>
+          <input
+            placeholder="Nick, nombre o NIF/CIF…"
+            value={query}
+            onChange={e=>setQuery(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* Sugerencias */}
+      {loading ? <small>Cargando…</small> : null}
+      {!loading && suggestions.length > 0 && (
+        <div style={{marginTop:8}}>
+          {suggestions.map(p=>(
+            <div key={p.id} className="row" style={{alignItems:'center', borderTop:'1px solid #e5e7eb', paddingTop:8, marginTop:8}}>
+              <div style={{flex:'1 1 auto'}}>
+                <div style={{fontWeight:600}}>{p.nick || p.name || 'Sin nombre'}</div>
+                <div style={{fontSize:12, color:'#6b7280'}}>{p.tax_id || '—'}</div>
               </div>
-            ))}
-            {rows.length===0 ? <small>No hay resultados.</small> : null}
-          </div>
-        </>
-      ) : (
-        <div className="card">
-          <div className="row">
-            <div style={{flex:'0 0 180px'}}><label>Tipo</label>
-              <select value={form.tax_type} onChange={e=>setForm({...form, tax_type: e.target.value as any})}>
-                <option value="particular">Particular</option>
-                <option value="empresa">Empresa</option>
-              </select>
+              <Button onClick={()=>linkExisting(p.id)}>Vincular</Button>
             </div>
-            <div style={{flex:'1 1 220px'}}><label>Nick</label><input value={form.nick} onChange={e=>setForm({...form, nick:e.target.value})}/></div>
-            <div style={{flex:'1 1 260px'}}><label>Nombre / Compañía</label><input value={form.name} onChange={e=>setForm({...form, name:e.target.value})}/></div>
-            <div style={{flex:'0 0 200px'}}><label>NIF/CIF</label><input value={form.tax_id} onChange={e=>setForm({...form, tax_id:e.target.value})}/></div>
-            <div style={{flex:'1 1 260px'}}><label>Nombre fiscal</label><input value={form.tax_name} onChange={e=>setForm({...form, tax_name:e.target.value})}/></div>
-            <div style={{flex:'0 0 220px'}}><label>Email</label><input value={form.email} onChange={e=>setForm({...form, email:e.target.value})}/></div>
-            <div style={{flex:'0 0 160px'}}><label>Teléfono</label><input value={form.phone} onChange={e=>setForm({...form, phone:e.target.value})}/></div>
-          </div>
-          {err ? <div style={{color:'#b91c1c'}}>{err}</div> : null}
-          <div style={{display:'flex', gap:8}}>
-            <Button onClick={create}>Guardar</Button>
-            <Button tone="neutral" onClick={()=>{ setCreating(false); setErr(null); }}>Cancelar</Button>
-          </div>
+          ))}
         </div>
       )}
+
+      {/* Crear nuevo */}
+      <div className="row" style={{marginTop:12}}>
+        <div style={{flex:'1 1 220px'}}><label>Nick</label><input value={newNick} onChange={e=>setNewNick(e.target.value)} /></div>
+        <div style={{flex:'1 1 280px'}}><label>Nombre/Empresa</label><input value={newName} onChange={e=>setNewName(e.target.value)} /></div>
+        <div style={{flex:'0 0 220px'}}><label>NIF/CIF</label><input value={newTax} onChange={e=>setNewTax(e.target.value)} /></div>
+      </div>
+      <div style={{display:'flex', gap:8}}>
+        <Button onClick={createNew} disabled={saving}>Guardar y crear</Button>
+      </div>
     </div>
   );
 }
