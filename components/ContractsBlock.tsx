@@ -1,138 +1,216 @@
+// components/ContractsBlock.tsx
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import Button from './Button';
 
-type Props = {
-  kind: 'artist' | 'third';
-  ownerId: string; // artist_id o third_party_id
-};
+type Kind = 'artist' | 'third';
 
-type ContractRow = {
+type Row = {
   id: string;
   name: string | null;
-  signed_at: string | null;
-  active: boolean | null;
+  signed_at: string | null; // date
   file_url: string | null;
+  active: boolean | null;
   created_at: string;
 };
 
-export default function ContractsBlock({ kind, ownerId }: Props) {
-  const table = kind === 'artist' ? 'artist_contracts' : 'third_party_contracts';
-  const fk = kind === 'artist' ? 'artist_id' : 'third_party_id';
+const BUCKET_CONTRACTS = 'contracts';
 
-  const [rows, setRows] = useState<ContractRow[]>([]);
+function hasMissing(r: Row) {
+  return !r.name || !r.file_url || r.active === null || r.active === undefined;
+}
+
+async function uploadPdf(file: File) {
+  const ext = file.name.split('.').pop()?.toLowerCase() || 'pdf';
+  if (ext !== 'pdf') throw new Error('Solo se admiten archivos PDF');
+  const key = `${Date.now()}-${file.name}`; // conserva tildes/ñ
+  const { error: upErr } = await supabase.storage.from(BUCKET_CONTRACTS).upload(key, file, {
+    cacheControl: '3600',
+    upsert: false,
+    contentType: 'application/pdf',
+  });
+  if (upErr) throw upErr;
+  const { data, error: signErr } = await supabase.storage
+    .from(BUCKET_CONTRACTS)
+    .createSignedUrl(key, 60 * 60 * 24 * 365);
+  if (signErr || !data) throw signErr || new Error('No se pudo firmar URL');
+  return data.signedUrl;
+}
+
+export default function ContractsBlock({ kind, ownerId }: { kind: Kind; ownerId: string }) {
+  const [rows, setRows] = useState<Row[]>([]);
   const [adding, setAdding] = useState(false);
-  const [file, setFile] = useState<File|null>(null);
   const [name, setName] = useState('');
-  const [date, setDate] = useState('');
+  const [signedAt, setSignedAt] = useState('');
   const [active, setActive] = useState(true);
-  const [err, setErr] = useState<string| null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   async function load() {
+    const table = kind === 'artist' ? 'artist_contracts' : 'third_party_contracts';
+    const fk = kind === 'artist' ? 'artist_id' : 'third_party_id';
     const { data, error } = await supabase
       .from(table)
-      .select('id,name,signed_at,active,file_url,created_at')
+      .select('*')
       .eq(fk, ownerId)
       .order('created_at', { ascending: false });
     if (error) setErr(error.message);
-    setRows(data || []);
+    setRows((data || []) as any);
   }
-  useEffect(()=>{ load(); }, [ownerId, table]);
 
-  async function add() {
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, ownerId]);
+
+  async function onAdd() {
     setErr(null);
+    if (!file) return setErr('Adjunta el PDF del contrato.');
+    if (!name.trim()) return setErr('Pon el nombre del contrato.');
+
     try {
-      if (!file) { setErr('Adjunta un PDF.'); return; }
-      const extOk = file.name.toLowerCase().endsWith('.pdf');
-      if (!extOk) { setErr('Sólo se aceptan PDF.'); return; }
+      setBusy(true);
+      const file_url = await uploadPdf(file);
 
-      // 1) subimos a Storage (bucket 'contracts')
-      const path = `${Date.now()}-${file.name}`;
-      const up = await supabase.storage.from('contracts').upload(path, file, {contentType:'application/pdf'});
-      if (up.error) throw up.error;
+      const table = kind === 'artist' ? 'artist_contracts' : 'third_party_contracts';
+      const payload: any = {
+        name,
+        signed_at: signedAt || null,
+        active,
+        file_url,
+      };
+      if (kind === 'artist') payload.artist_id = ownerId;
+      else payload.third_party_id = ownerId;
 
-      // 2) URL firmada 1 año
-      const signed = await supabase.storage.from('contracts').createSignedUrl(path, 60*60*24*365);
-      if (signed.error || !signed.data) throw signed.error || new Error('No signed url');
-      const url = signed.data.signedUrl;
-
-      // 3) Insert en tabla (RLS ya abierto en SQL)
-      const payload:any = { [fk]: ownerId, name: name || null, signed_at: date || null, active, file_url: url };
-      const { error: insErr } = await supabase.from(table).insert(payload);
-      if (insErr) throw insErr;
+      const { error } = await supabase.from(table).insert(payload);
+      if (error) throw error;
 
       setAdding(false);
-      setFile(null); setName(''); setDate(''); setActive(true);
+      setName('');
+      setSignedAt('');
+      setActive(true);
+      setFile(null);
       await load();
-    } catch (e:any) {
-      setErr(e.message || 'Error al guardar el contrato');
+    } catch (e: any) {
+      setErr(e.message || 'Error guardando contrato');
+    } finally {
+      setBusy(false);
     }
-  }
-
-  function needUpdate(r: ContractRow) {
-    // Si falta algún dato clave, mostramos aviso
-    return !r.name || !r.signed_at || r.active === null || !r.file_url;
   }
 
   return (
     <div>
-      {/* Cabecera del bloque: botón a la IZQUIERDA */}
-      <div style={{display:'flex', justifyContent:'flex-start', marginBottom:8}}>
-        {!adding ? (
-          <Button onClick={()=>setAdding(true)}>+ Añadir contrato</Button>
-        ) : null}
-      </div>
+      {rows.length === 0 ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <small>No hay contratos.</small>
+          {!adding && (
+            <Button onClick={() => setAdding(true)} icon="plus">
+              Añadir contrato
+            </Button>
+          )}
+        </div>
+      ) : null}
 
+      {rows.map((r) => (
+        <div key={r.id} className="card" style={{ marginBottom: 8 }}>
+          <div className="row" style={{ alignItems: 'center' }}>
+            <div style={{ flex: '1 1 auto' }}>
+              <div style={{ fontWeight: 600 }}>{r.name || '—'}</div>
+              <div style={{ color: '#6b7280', fontSize: 12 }}>
+                {r.signed_at ? `Firmado: ${r.signed_at}` : 'Sin fecha'}
+              </div>
+            </div>
+            {r.active ? (
+              <span style={{ background: '#16a34a', color: '#fff', padding: '2px 6px', borderRadius: 8 }}>
+                En vigor
+              </span>
+            ) : (
+              <span style={{ background: '#9ca3af', color: '#fff', padding: '2px 6px', borderRadius: 8 }}>
+                No vigente
+              </span>
+            )}
+          </div>
+
+          {hasMissing(r) && (
+            <div
+              style={{
+                marginTop: 6,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: '#fbbf24',
+                color: '#111827',
+                padding: '2px 8px',
+                borderRadius: 8,
+                fontSize: 12,
+              }}
+              title="Actualiza los datos del contrato"
+            >
+              ⚠️ Necesario actualizar datos
+            </div>
+          )}
+
+          {r.file_url ? (
+            <div style={{ marginTop: 6 }}>
+              <a href={r.file_url} target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>
+                Ver contrato (PDF)
+              </a>
+            </div>
+          ) : null}
+        </div>
+      ))}
+
+      {/* Formulario inline de alta */}
       {adding && (
-        <div className="card" style={{marginBottom:10}}>
+        <div className="card" style={{ marginTop: 8 }}>
           <div className="row">
-            <div style={{flex:'1 1 260px'}}><label>Nombre del contrato</label><input value={name} onChange={e=>setName(e.target.value)}/></div>
-            <div style={{flex:'0 0 200px'}}><label>Fecha firma</label><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
-            <div style={{flex:'0 0 200px'}}><label>Estado</label>
-              <select value={active ? '1':'0'} onChange={e=>setActive(e.target.value==='1')}>
-                <option value="1">En vigor</option>
-                <option value="0">No vigente</option>
+            <div style={{ flex: '1 1 280px' }}>
+              <label>Nombre del contrato</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div style={{ flex: '0 0 180px' }}>
+              <label>Fecha de firma</label>
+              <input type="date" value={signedAt} onChange={(e) => setSignedAt(e.target.value)} />
+            </div>
+            <div style={{ flex: '0 0 160px' }}>
+              <label>¿En vigor?</label>
+              <select value={active ? 'sí' : 'no'} onChange={(e) => setActive(e.target.value === 'sí')}>
+                <option>sí</option>
+                <option>no</option>
               </select>
             </div>
-            <div style={{flex:'1 1 280px'}}><label>Archivo (PDF)</label>
-              <input type="file" accept="application/pdf" onChange={e=>setFile(e.target.files?.[0] ?? null)}/>
+            <div style={{ flex: '1 1 320px' }}>
+              <label>Archivo (PDF)</label>
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              />
             </div>
           </div>
-          {err ? <div style={{color:'#b91c1c', marginTop:6}}>{err}</div> : null}
-          <div style={{display:'flex', gap:8}}>
-            <Button onClick={add}>Guardar contrato</Button>
-            <Button tone="neutral" onClick={()=>{ setAdding(false); setErr(null); setFile(null); setName(''); setDate(''); setActive(true); }}>Cancelar</Button>
+
+          {err ? (
+            <div style={{ color: '#d42842', marginTop: 8 }}>{err}</div>
+          ) : null}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <Button onClick={onAdd} disabled={busy} icon="plus">
+              Guardar contrato
+            </Button>
+            <Button tone="neutral" onClick={() => setAdding(false)}>
+              Cancelar
+            </Button>
           </div>
         </div>
       )}
 
-      {/* Lista */}
-      {rows.length === 0 ? (
-        <small>No hay contratos.</small>
-      ) : (
-        <div style={{display:'flex', flexDirection:'column', gap:8}}>
-          {rows.map(r=>(
-            <div key={r.id} className="card">
-              <div className="row" style={{alignItems:'center'}}>
-                <div style={{flex:'1 1 280px'}}><strong>{r.name || 'Sin título'}</strong></div>
-                <div style={{flex:'0 0 180px'}}>{r.signed_at || '—'}</div>
-                <div style={{flex:'0 0 140px'}}>
-                  {r.active ? <span className="tag" style={{background:'#10b981', color:'#fff'}}>En vigor</span>
-                            : <span className="tag" style={{background:'#9ca3af', color:'#fff'}}>No vigente</span>}
-                </div>
-                <div style={{flex:'0 0 200px'}}>
-                  {r.file_url ? <a href={r.file_url} target="_blank" rel="noreferrer">Descargar PDF</a> : '—'}
-                </div>
-              </div>
-
-              {needUpdate(r) && (
-                <div style={{marginTop:6, display:'inline-flex', alignItems:'center', gap:6, background:'#fef3c7', color:'#92400e', padding:'6px 10px', borderRadius:8}}>
-                  <span>⚠️</span>
-                  <span><strong>Necesario actualizar datos</strong></span>
-                </div>
-              )}
-            </div>
-          ))}
+      {/* Botón de añadir cuando existen contratos */}
+      {!adding && rows.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <Button onClick={() => setAdding(true)} icon="plus">
+            Añadir contrato
+          </Button>
         </div>
       )}
     </div>
