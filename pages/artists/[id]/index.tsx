@@ -6,6 +6,7 @@ import { supabase } from '../../../lib/supabaseClient';
 import Layout from '../../../components/Layout';
 import Button from '../../../components/Button';
 import ContractsBlock from '../../../components/ContractsBlock';
+import PartySearchSelect from '../../../components/PartySearchSelect';
 
 type Artist = {
   id: string;
@@ -23,51 +24,29 @@ type Artist = {
   tax_id: string | null;
   tax_address: string | null;
   iban: string | null;
-  is_archived: boolean | null;
+  is_archived?: boolean | null;
 };
 
 type Member = {
-  id: string;
-  full_name: string;
-  dni: string | null;
-  birth_date: string | null;
-  email: string | null;
-  phone: string | null;
-  tax_type: 'particular'|'empresa';
-  tax_name: string | null;
-  tax_id: string | null;
-  tax_address: string | null;
-  iban: string | null;
-  share_pct: number;
+  id: string; full_name: string; dni: string | null; birth_date: string | null;
+  email: string | null; phone: string | null;
+  tax_type: 'particular'|'empresa'; tax_name: string | null; tax_id: string | null;
+  tax_address: string | null; iban: string | null; share_pct: number;
 };
 
 type Econ = {
-  category: string;
-  artist_pct: number;
-  office_pct: number;
-  artist_base: 'gross'|'net';
-  office_base: 'gross'|'net';
-  office_exempt_type: 'amount'|'percent';
-  office_exempt_value: number;
+  category: string; artist_pct: number; office_pct: number;
+  artist_base: 'gross'|'net'; office_base: 'gross'|'net';
+  office_exempt_type: 'amount'|'percent'; office_exempt_value: number;
   brands_mode?: 'office_only'|'split'|null;
 };
 
 type Third = {
-  id: string;
-  artist_id: string | null;
-  kind: 'third'|'provider';
-  nick: string|null;
-  name: string|null;
-  email: string|null;
-  phone: string|null;
-  logo_url: string|null;
-  is_active: boolean;
-  unlinked?: boolean | null;
-  unlinked_at?: string | null;
-  unlinked_from_artist_id?: string | null;
-  unlinked_from_artist_name?: string | null;
-}
-
+  id: string; artist_id: string|null; kind: 'third'|'provider';
+  nick: string|null; name: string|null; email: string|null; phone: string|null;
+  logo_url: string|null; is_active: boolean; unlinked?: boolean|null; unlinked_at?: string|null;
+  unlinked_from_artist_id?: string|null;
+};
 type ThirdEcon = {
   category:string; third_pct:number; third_base:'gross'|'net';
   base_scope:'total'|'office'|'artist'; third_exempt_type:'amount'|'percent'; third_exempt_value:number;
@@ -93,18 +72,15 @@ export default function ArtistShow() {
     if (!id) return;
     setLoading(true); setErr(null);
     try {
-      const { data: a, error: aErr } = await supabase.from('artists').select('*').eq('id', id).single();
-      if (aErr) throw aErr;
+      const { data: a } = await supabase.from('artists').select('*').eq('id', id).single();
       setArtist(a as any);
 
-      const { data: m, error: mErr } = await supabase.from('artist_members').select('*').eq('artist_id', id);
-      if (mErr) throw mErr;
+      const { data: m } = await supabase.from('artist_members').select('*').eq('artist_id', id);
       const uniq = new Map<string, any>();
       (m||[]).forEach((r:any)=>{ const k = `${r.full_name||''}::${r.dni||''}`; if(!uniq.has(k)) uniq.set(k,r); });
       setMembers(Array.from(uniq.values()) as any);
 
-      const { data: e, error: eErr } = await supabase.from('artist_economics').select('*').eq('artist_id', id);
-      if (eErr) throw eErr;
+      const { data: e } = await supabase.from('artist_economics').select('*').eq('artist_id', id);
       const byCat = new Map<string, any>();
       (e||[]).forEach((r:any)=>byCat.set(r.category, r));
       const filtered = Array.from(byCat.values()).filter((r:any)=>{
@@ -114,15 +90,17 @@ export default function ArtistShow() {
       }).sort((a,b)=> GENERAL_ORDER.indexOf(a.category)-GENERAL_ORDER.indexOf(b.category));
       setEcon(filtered as any);
 
-      const { data: t, error: tErr } = await supabase
-        .from('third_parties').select('*, third_party_economics(*)')
-        .eq('artist_id', id).eq('kind','third').order('nick',{ascending:true});
-      if (tErr) throw tErr;
+      const { data: t } = await supabase
+        .from('third_parties')
+        .select('*, third_party_economics(*)')
+        .eq('artist_id', id)
+        .eq('is_deleted', false)
+        .eq('kind','third')
+        .order('nick',{ascending:true});
       setThirds(((t||[]) as any).map((row:any)=>({
         id: row.id, artist_id: row.artist_id, kind: row.kind, nick: row.nick, name: row.name,
         email: row.email, phone: row.phone, logo_url: row.logo_url, is_active: row.is_active!==false,
         unlinked: row.unlinked, unlinked_at: row.unlinked_at, unlinked_from_artist_id: row.unlinked_from_artist_id,
-        unlinked_from_artist_name: row.unlinked_from_artist_name,
         econ: (row.third_party_economics||[]).filter((r:any)=>Number(r.third_pct||0) > 0)
       })));
     } catch (e:any) {
@@ -131,35 +109,43 @@ export default function ArtistShow() {
       setLoading(false);
     }
   }
-
   useEffect(()=>{ loadAll(); }, [id]);
 
   async function setArchived(value: boolean) {
     if (!artist) return;
-    const { error } = await supabase
-      .from('artists')
-      .update({ is_archived: value })
-      .eq('id', artist.id);
+    const { error } = await supabase.from('artists').update({ is_archived: value }).eq('id', artist.id);
     if (error) { alert('No se pudo actualizar: ' + error.message); return; }
     await loadAll();
   }
 
-  // Borrado definitivo (requiere is_archived = true por policy)
   async function hardDelete() {
     if (!artist) return;
-    const sure = prompt('Escribe ELIMINAR para borrar definitivamente este artista (borrado lógico).');
+    const sure = prompt('Escribe ELIMINAR para borrar definitivamente este artista');
     if (sure !== 'ELIMINAR') return;
-  
     try {
-      // llamamos a la RPC que hace el borrado lógico
-      const { error } = await supabase.rpc('soft_delete_artist', { aid: artist.id });
+      // contratos
+      await supabase.from('artist_contracts').delete().eq('artist_id', artist.id);
+
+      // terceros -> borrar contratos/econ y desvincular
+      const { data: tps } = await supabase.from('third_parties').select('id').eq('artist_id', artist.id);
+      for (const tp of (tps||[])) {
+        await supabase.from('third_party_contracts').delete().eq('third_party_id', tp.id);
+        await supabase.from('third_party_economics').delete().eq('third_party_id', tp.id);
+      }
+      await supabase.from('third_parties').delete().eq('artist_id', artist.id);
+
+      await supabase.from('artist_member_splits').delete().eq('artist_id', artist.id);
+      await supabase.from('artist_members').delete().eq('artist_id', artist.id);
+      await supabase.from('artist_economics').delete().eq('artist_id', artist.id);
+
+      const { error } = await supabase.from('artists').delete().eq('id', artist.id);
       if (error) throw error;
-  
-      alert('Artista eliminado (borrado lógico).');
-      // al tener RLS de select que oculta is_deleted = true,
-      // redirigimos para que "desaparezca" del sistema
-      window.location.href = '/artists';
-    } catch (e: any) {
+
+      const { data: still } = await supabase.from('artists').select('id').eq('id', artist.id).maybeSingle();
+      if (still) { alert('El artista sigue existiendo (probable FK o RLS).'); return; }
+
+      window.location.href = '/artists/archived';
+    } catch (e:any) {
       alert('No se pudo borrar: ' + (e.message || e));
     }
   }
@@ -174,14 +160,21 @@ export default function ArtistShow() {
         artist_id: null,
         unlinked: true,
         unlinked_at: new Date().toISOString(),
-        unlinked_from_artist_id: artist.id,
-        unlinked_from_artist_name: artist.stage_name || null
+        unlinked_from_artist_id: artist.id
       })
       .eq('id', thirdId);
-    if (error) {
-      alert('No se pudo desvincular: ' + error.message);
-      return;
-    }
+    if (error) { alert('No se pudo desvincular: ' + error.message); return; }
+    await loadAll();
+  }
+
+  // Añadir tercero: usar PartySearchSelect y vincular
+  async function linkThird(tp: {id:string}) {
+    if (!artist) return;
+    const { error } = await supabase
+      .from('third_parties')
+      .update({ artist_id: artist.id, unlinked: false, unlinked_at: null, unlinked_from_artist_id: null })
+      .eq('id', tp.id);
+    if (error) return alert(error.message);
     await loadAll();
   }
 
@@ -208,9 +201,8 @@ export default function ArtistShow() {
             ) : null}
           </div>
         </div>
-
         <div style={{ display:'flex', gap:8 }}>
-          <Button as="a" href={`/artists/${artist.id}/edit`} tone="neutral">Editar</Button>
+          <Link href={`/artists/${artist.id}/edit`}><Button tone="neutral">Editar</Button></Link>
           {artist.is_archived ? (
             <>
               <Button onClick={()=>setArchived(false)}>Recuperar</Button>
@@ -256,7 +248,6 @@ export default function ArtistShow() {
 
       {/* Contratos */}
       <div className="module">
-        <h2>Contratos</h2>
         <ContractsBlock kind="artist" ownerId={artist.id} />
       </div>
 
@@ -270,6 +261,7 @@ export default function ArtistShow() {
                 <div style={{ flex:'1 1 220px' }}>
                   <div className="badge">{r.category}</div>
                 </div>
+
                 {Number(r.office_pct||0) > 0 && (
                   <>
                     <div style={{ flex:'0 0 120px' }}><strong>% Oficina</strong><div>{r.office_pct}%</div></div>
@@ -296,26 +288,19 @@ export default function ArtistShow() {
             ))}
           </>
         )}
-
-        {artist.is_group && members.length > 0 && (
-          <div className="card" style={{ marginTop: 12, background: '#f9fafb' }}>
-            <h3 style={{ marginTop: 0 }}>Reparto beneficio artista (grupo)</h3>
-            <div className="row">
-              {members.map((m)=>(
-                <div key={m.id} style={{ flex:'0 0 240px' }}>
-                  <strong>{m.full_name}</strong>
-                  <div>{(m.share_pct || 0)}%</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Terceros vinculados */}
       <div className="module">
-        <h2>Terceros vinculados</h2>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+          <h2 style={{margin:0}}>Terceros vinculados</h2>
+        </div>
+
+        {/* Buscar/crear y vincular */}
+        <PartySearchSelect mode="third" onPicked={linkThird} />
+
         {thirds.length === 0 ? <small>No hay terceros vinculados.</small> : null}
+
         {thirds.map((t)=>(
           <div key={t.id} className="card">
             <div className="row" style={{ alignItems:'center' }}>
@@ -328,14 +313,10 @@ export default function ArtistShow() {
                 </Link>
                 <div style={{ color:'#6b7280', fontSize:12 }}>
                   {t.email || '—'} · {t.phone || '—'}
-                  {t.unlinked && t.unlinked_from_artist_name && t.unlinked_at ? (
-                    <span style={{marginLeft:8, color:'#b91c1c'}}>
-                      · Desvinculado de {t.unlinked_from_artist_name} desde {new Date(t.unlinked_at).toLocaleDateString()}
-                    </span>
-                  ) : null}
                 </div>
               </div>
-              <div>
+              <div style={{display:'flex', gap:8}}>
+                <Link href={`/partners/thirds/${t.id}`}><Button tone="neutral">Editar</Button></Link>
                 <Button tone="danger" onClick={()=>unlinkThird(t.id)}>Desvincular</Button>
               </div>
             </div>
