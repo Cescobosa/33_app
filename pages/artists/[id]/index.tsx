@@ -280,19 +280,29 @@ export default function ArtistShow() {
       <div className="module" style={{display:'flex', alignItems:'center', gap:16, justifyContent:'space-between'}}>
         <div style={{display:'flex', alignItems:'center', gap:16}}>
           <div style={{ width: 96, height: 96, borderRadius: 16, overflow: 'hidden', background: '#f3f4f6' }}>
-            {artist.photo_url && <img src={artist.photo_url} alt={artist.stage_name} style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>}
+            {artist.photo_url && (
+              <img
+                src={artist.photo_url}
+                alt={artist.stage_name}
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+            )}
           </div>
           <div>
             <h1 style={{ margin: 0 }}>{artist.stage_name}</h1>
             <div style={{ color: '#6b7280', marginTop: 4 }}>
               Contrato: <strong>{artist.contract_type}</strong> &nbsp;·&nbsp; {artist.is_group ? 'Grupo' : 'Solista'}
             </div>
-            {artist.archived ? <div style={{ color:'#b91c1c', fontSize:12, marginTop:4 }}>Archivado</div> : null}
+            {artist.is_archived ? (
+              <div style={{ color:'#b91c1c', fontSize:12, marginTop:4 }}>Archivado</div>
+            ) : null}
           </div>
         </div>
+      
+        {/* Botones de acción */}
         <div style={{ display:'flex', gap:8 }}>
           <Button as="a" href={`/artists/${artist.id}/edit`} tone="neutral">Editar</Button>
-          {artist.archived ? (
+          {artist.is_archived ? (
             <>
               <Button onClick={()=>setArchived(false)}>Recuperar</Button>
               <Button tone="danger" onClick={hardDelete}>Borrar</Button>
