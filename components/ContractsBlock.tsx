@@ -3,216 +3,174 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import Button from './Button';
 
-type Kind = 'artist' | 'third';
+const BUCKET = 'contracts';
 
-type Row = {
-  id: string;
-  name: string | null;
-  signed_at: string | null; // date
-  file_url: string | null;
-  active: boolean | null;
-  created_at: string;
+type Base = { id: string; name: string|null; signed_at: string|null; file_url: string|null; is_active: boolean|null; created_at?: string };
+type Props = {
+  kind: 'artist'|'third';
+  ownerId: string;                 // artist_id ó third_party_id
 };
 
-const BUCKET_CONTRACTS = 'contracts';
-
-function hasMissing(r: Row) {
-  return !r.name || !r.file_url || r.active === null || r.active === undefined;
-}
-
-async function uploadPdf(file: File) {
-  const ext = file.name.split('.').pop()?.toLowerCase() || 'pdf';
-  if (ext !== 'pdf') throw new Error('Solo se admiten archivos PDF');
-  const key = `${Date.now()}-${file.name}`; // conserva tildes/ñ
-  const { error: upErr } = await supabase.storage.from(BUCKET_CONTRACTS).upload(key, file, {
-    cacheControl: '3600',
-    upsert: false,
-    contentType: 'application/pdf',
-  });
+async function uploadAndSign(file: File) {
+  const key = `${Date.now()}-${file.name}`;
+  const { error: upErr } = await supabase.storage.from(BUCKET).upload(key, file);
   if (upErr) throw upErr;
-  const { data, error: signErr } = await supabase.storage
-    .from(BUCKET_CONTRACTS)
-    .createSignedUrl(key, 60 * 60 * 24 * 365);
-  if (signErr || !data) throw signErr || new Error('No se pudo firmar URL');
+  const { data, error: signErr } = await supabase.storage.from(BUCKET).createSignedUrl(key, 60*60*24*365);
+  if (signErr || !data) throw signErr || new Error('No signed URL');
   return data.signedUrl;
 }
 
-export default function ContractsBlock({ kind, ownerId }: { kind: Kind; ownerId: string }) {
-  const [rows, setRows] = useState<Row[]>([]);
-  const [adding, setAdding] = useState(false);
-  const [name, setName] = useState('');
-  const [signedAt, setSignedAt] = useState('');
-  const [active, setActive] = useState(true);
-  const [file, setFile] = useState<File | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+export default function ContractsBlock({ kind, ownerId }: Props) {
+  const [rows, setRows]   = useState<Base[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string|null>(null);
+
+  // nuevo
+  const [nName, setNName] = useState('');
+  const [nDate, setNDate] = useState('');
+  const [nActive, setNActive] = useState('sí');
+  const [nFile, setNFile] = useState<File|null>(null);
+
+  // edición inline
+  const [editId, setEditId] = useState<string|null>(null);
+  const [eName, setEName] = useState('');
+  const [eDate, setEDate] = useState('');
+  const [eActive, setEActive] = useState('sí');
+  const [eFile, setEFile] = useState<File|null>(null);
+
+  const table = kind==='artist' ? 'artist_contracts' : 'third_party_contracts';
+  const fk    = kind==='artist' ? 'artist_id'        : 'third_party_id';
 
   async function load() {
-    const table = kind === 'artist' ? 'artist_contracts' : 'third_party_contracts';
-    const fk = kind === 'artist' ? 'artist_id' : 'third_party_id';
+    setLoading(true); setErr(null);
     const { data, error } = await supabase
       .from(table)
-      .select('*')
+      .select('id, name, signed_at, is_active, file_url, created_at')
       .eq(fk, ownerId)
       .order('created_at', { ascending: false });
     if (error) setErr(error.message);
-    setRows((data || []) as any);
+    setRows(data || []);
+    setLoading(false);
+  }
+  useEffect(()=>{ if (ownerId) load(); }, [ownerId]);
+
+  async function onCreate() {
+    if (!nFile) return alert('Selecciona el PDF');
+    const file_url = await uploadAndSign(nFile);
+    const payload:any = {
+      [fk]: ownerId,
+      name: nName || null,
+      signed_at: nDate || null,
+      is_active: (nActive==='sí'),
+      file_url
+    };
+    const { error } = await supabase.from(table).insert(payload);
+    if (error) return alert(error.message);
+    setNName(''); setNDate(''); setNActive('sí'); setNFile(null);
+    await load();
   }
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, ownerId]);
-
-  async function onAdd() {
-    setErr(null);
-    if (!file) return setErr('Adjunta el PDF del contrato.');
-    if (!name.trim()) return setErr('Pon el nombre del contrato.');
-
-    try {
-      setBusy(true);
-      const file_url = await uploadPdf(file);
-
-      const table = kind === 'artist' ? 'artist_contracts' : 'third_party_contracts';
-      const payload: any = {
-        name,
-        signed_at: signedAt || null,
-        active,
-        file_url,
-      };
-      if (kind === 'artist') payload.artist_id = ownerId;
-      else payload.third_party_id = ownerId;
-
-      const { error } = await supabase.from(table).insert(payload);
-      if (error) throw error;
-
-      setAdding(false);
-      setName('');
-      setSignedAt('');
-      setActive(true);
-      setFile(null);
-      await load();
-    } catch (e: any) {
-      setErr(e.message || 'Error guardando contrato');
-    } finally {
-      setBusy(false);
-    }
+  function beginEdit(r:Base) {
+    setEditId(r.id);
+    setEName(r.name || '');
+    setEDate(r.signed_at || '');
+    setEActive(r.is_active ? 'sí' : 'no');
+    setEFile(null);
+  }
+  async function onSaveEdit() {
+    if (!editId) return;
+    let file_url: string | undefined = undefined;
+    if (eFile) file_url = await uploadAndSign(eFile);
+    const { error } = await supabase.from(table).update({
+      name: eName || null,
+      signed_at: eDate || null,
+      is_active: (eActive==='sí'),
+      ...(file_url ? { file_url } : {})
+    }).eq('id', editId);
+    if (error) return alert(error.message);
+    setEditId(null); setEFile(null);
+    await load();
+  }
+  async function onDelete(id:string) {
+    const confirm = prompt('Para eliminar, escribe: ELIMINAR');
+    if (confirm !== 'ELIMINAR') return;
+    const { error } = await supabase.from(table).delete().eq('id', id);
+    if (error) return alert(error.message);
+    await load();
   }
 
   return (
-    <div>
-      {rows.length === 0 ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <small>No hay contratos.</small>
-          {!adding && (
-            <Button onClick={() => setAdding(true)} icon="plus">
-              Añadir contrato
-            </Button>
-          )}
-        </div>
-      ) : null}
+    <div className="card">
+      <h3 style={{marginTop:0}}>Contratos</h3>
 
-      {rows.map((r) => (
-        <div key={r.id} className="card" style={{ marginBottom: 8 }}>
-          <div className="row" style={{ alignItems: 'center' }}>
-            <div style={{ flex: '1 1 auto' }}>
-              <div style={{ fontWeight: 600 }}>{r.name || '—'}</div>
-              <div style={{ color: '#6b7280', fontSize: 12 }}>
-                {r.signed_at ? `Firmado: ${r.signed_at}` : 'Sin fecha'}
-              </div>
-            </div>
-            {r.active ? (
-              <span style={{ background: '#16a34a', color: '#fff', padding: '2px 6px', borderRadius: 8 }}>
-                En vigor
-              </span>
+      {/* listado */}
+      {loading ? <div>Cargando…</div> : null}
+      {err ? <div style={{color:'#d42842'}}>Error: {err}</div> : null}
+      {(!loading && rows.length===0) ? <small>No hay contratos.</small> : null}
+
+      {rows.map(r=>(
+        <div key={r.id} className="row" style={{borderTop:'1px dashed #e5e7eb', paddingTop:8, marginTop:8}}>
+          <div style={{flex:'1 1 40%'}}>
+            {editId===r.id ? (
+              <input value={eName} onChange={e=>setEName(e.target.value)} placeholder="Nombre contrato"/>
             ) : (
-              <span style={{ background: '#9ca3af', color: '#fff', padding: '2px 6px', borderRadius: 8 }}>
-                No vigente
-              </span>
+              <strong>{r.name || 'Sin nombre'}</strong>
+            )}
+            <div>
+              {r.file_url ? <a href={r.file_url} target="_blank" rel="noreferrer">Descargar PDF</a> : <small>Sin archivo</small>}
+            </div>
+          </div>
+          <div style={{flex:'0 0 200px'}}>
+            {editId===r.id ? (
+              <input type="date" value={eDate} onChange={e=>setEDate(e.target.value)}/>
+            ) : (
+              <div>{r.signed_at || '—'}</div>
             )}
           </div>
-
-          {hasMissing(r) && (
-            <div
-              style={{
-                marginTop: 6,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                background: '#fbbf24',
-                color: '#111827',
-                padding: '2px 8px',
-                borderRadius: 8,
-                fontSize: 12,
-              }}
-              title="Actualiza los datos del contrato"
-            >
-              ⚠️ Necesario actualizar datos
-            </div>
-          )}
-
-          {r.file_url ? (
-            <div style={{ marginTop: 6 }}>
-              <a href={r.file_url} target="_blank" rel="noreferrer" style={{ textDecoration: 'underline' }}>
-                Ver contrato (PDF)
-              </a>
-            </div>
-          ) : null}
+          <div style={{flex:'0 0 160px'}}>
+            {editId===r.id ? (
+              <select value={eActive} onChange={e=>setEActive(e.target.value as any)}>
+                <option>sí</option><option>no</option>
+              </select>
+            ) : (
+              r.is_active ? <span className="badge" style={{background:'#16a34a22', color:'#166534'}}>En vigor</span>
+                          : <span className="badge" style={{background:'#9ca3af22', color:'#374151'}}>No activo</span>
+            )}
+          </div>
+          <div style={{flex:'1 1 30%'}}>
+            {editId===r.id ? (
+              <>
+                <input type="file" accept="application/pdf" onChange={e=>setEFile(e.target.files?.[0] || null)}/>
+                <div style={{display:'flex', gap:8, marginTop:8}}>
+                  <Button onClick={onSaveEdit}>Guardar</Button>
+                  <Button tone="neutral" onClick={()=>setEditId(null)}>Cancelar</Button>
+                </div>
+              </>
+            ) : (
+              <div style={{display:'flex', gap:8, justifyContent:'flex-end'}}>
+                <Button tone="neutral" onClick={()=>beginEdit(r)}>Editar</Button>
+                <Button tone="danger" onClick={()=>onDelete(r.id)}>Eliminar</Button>
+              </div>
+            )}
+          </div>
         </div>
       ))}
 
-      {/* Formulario inline de alta */}
-      {adding && (
-        <div className="card" style={{ marginTop: 8 }}>
-          <div className="row">
-            <div style={{ flex: '1 1 280px' }}>
-              <label>Nombre del contrato</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} />
-            </div>
-            <div style={{ flex: '0 0 180px' }}>
-              <label>Fecha de firma</label>
-              <input type="date" value={signedAt} onChange={(e) => setSignedAt(e.target.value)} />
-            </div>
-            <div style={{ flex: '0 0 160px' }}>
-              <label>¿En vigor?</label>
-              <select value={active ? 'sí' : 'no'} onChange={(e) => setActive(e.target.value === 'sí')}>
-                <option>sí</option>
-                <option>no</option>
-              </select>
-            </div>
-            <div style={{ flex: '1 1 320px' }}>
-              <label>Archivo (PDF)</label>
-              <input
-                type="file"
-                accept="application/pdf"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              />
-            </div>
-          </div>
-
-          {err ? (
-            <div style={{ color: '#d42842', marginTop: 8 }}>{err}</div>
-          ) : null}
-
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <Button onClick={onAdd} disabled={busy} icon="plus">
-              Guardar contrato
-            </Button>
-            <Button tone="neutral" onClick={() => setAdding(false)}>
-              Cancelar
-            </Button>
-          </div>
+      {/* crear */}
+      <div className="card" style={{marginTop:12}}>
+        <h4 style={{marginTop:0}}>Añadir contrato</h4>
+        <div className="row" style={{gap:8}}>
+          <input placeholder="Nombre contrato" value={nName} onChange={e=>setNName(e.target.value)}/>
+          <input type="date" value={nDate} onChange={e=>setNDate(e.target.value)}/>
+          <select value={nActive} onChange={e=>setNActive(e.target.value as any)}>
+            <option>sí</option><option>no</option>
+          </select>
         </div>
-      )}
-
-      {/* Botón de añadir cuando existen contratos */}
-      {!adding && rows.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <Button onClick={() => setAdding(true)} icon="plus">
-            Añadir contrato
-          </Button>
+        <div className="row" style={{gap:8, marginTop:8}}>
+          <input type="file" accept="application/pdf" onChange={e=>setNFile(e.target.files?.[0] || null)}/>
+          <Button onClick={onCreate}>Guardar contrato</Button>
         </div>
-      )}
+      </div>
     </div>
   );
 }
