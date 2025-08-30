@@ -144,43 +144,91 @@ export default function ArtistShow() {
     if (!artist) return;
     const sure = prompt('Escribe ELIMINAR para borrar definitivamente este artista');
     if (sure !== 'ELIMINAR') return;
-
+  
     try {
-      // 1) contratos del artista
-      const delArtistContracts = await supabase.from('artist_contracts').delete().eq('artist_id', artist.id);
-      if (delArtistContracts.error) throw delArtistContracts.error;
-
-      // 2) terceros del artista: primero borrar dependencias, luego el tercero
+      // 0) contratos del artista
+      {
+        const { error } = await supabase
+          .from('artist_contracts')
+          .delete()
+          .eq('artist_id', artist.id);
+        if (error) throw error;
+      }
+  
+      // 1) terceros del artista: borrar contratos, economics y contactos de cada tercero y luego el tercero
       const { data: tps, error: tpsErr } = await supabase
         .from('third_parties')
         .select('id')
         .eq('artist_id', artist.id);
       if (tpsErr) throw tpsErr;
-
+  
       for (const tp of (tps || [])) {
-        const delTPContracts = await supabase.from('third_party_contracts').delete().eq('third_party_id', tp.id);
-        if (delTPContracts.error) throw delTPContracts.error;
-
-        const delTPEcon = await supabase.from('third_party_economics').delete().eq('third_party_id', tp.id);
-        if (delTPEcon.error) throw delTPEcon.error;
+        const delTPC = await supabase
+          .from('third_party_contracts')
+          .delete()
+          .eq('third_party_id', tp.id);
+        if (delTPC.error) throw delTPC.error;
+  
+        const delTPE = await supabase
+          .from('third_party_economics')
+          .delete()
+          .eq('third_party_id', tp.id);
+        if (delTPE.error) throw delTPE.error;
+  
+        const delTPCt = await supabase
+          .from('third_party_contacts')
+          .delete()
+          .eq('third_party_id', tp.id);
+        if (delTPCt.error) throw delTPCt.error;
       }
-
-      const delThirds = await supabase.from('third_parties').delete().eq('artist_id', artist.id);
-      if (delThirds.error) throw delThirds.error;
-
-      // 3) economía y miembros
-      const delEcon = await supabase.from('artist_economics').delete().eq('artist_id', artist.id);
-      if (delEcon.error) throw delEcon.error;
-
-      const delMembers = await supabase.from('artist_members').delete().eq('artist_id', artist.id);
-      if (delMembers.error) throw delMembers.error;
-
-      // 4) por último, el artista
-      const delArtist = await supabase.from('artists').delete().eq('id', artist.id);
-      if (delArtist.error) throw delArtist.error;
-
+  
+      {
+        const { error } = await supabase
+          .from('third_parties')
+          .delete()
+          .eq('artist_id', artist.id);
+        if (error) throw error;
+      }
+  
+      // 2) splits de miembros (tabla puente)
+      {
+        const { error } = await supabase
+          .from('artist_member_splits')
+          .delete()
+          .eq('artist_id', artist.id);
+        if (error) throw error;
+      }
+  
+      // 3) miembros
+      {
+        const { error } = await supabase
+          .from('artist_members')
+          .delete()
+          .eq('artist_id', artist.id);
+        if (error) throw error;
+      }
+  
+      // 4) economics
+      {
+        const { error } = await supabase
+          .from('artist_economics')
+          .delete()
+          .eq('artist_id', artist.id);
+        if (error) throw error;
+      }
+  
+      // 5) por último, el propio artista
+      {
+        const { error } = await supabase
+          .from('artists')
+          .delete()
+          .eq('id', artist.id);
+        if (error) throw error;
+      }
+  
+      // si todo fue bien, salimos del detalle
       window.location.href = '/artists/archived';
-    } catch (e:any) {
+    } catch (e: any) {
       alert('No se pudo borrar: ' + (e.message || e));
     }
   }
