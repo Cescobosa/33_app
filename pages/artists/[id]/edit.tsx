@@ -1,5 +1,5 @@
 // pages/artists/[id]/edit.tsx
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../../components/Layout';
 import Button from '../../../components/Button';
@@ -48,9 +48,11 @@ export default function EditArtist() {
 
   const [a, setA] = useState<Artist | null>(null);
 
+  // Miembros
   const [members, setMembers] = useState<Member[]>([]);
   const [initialIds, setInitialIds] = useState<string[]>([]);
 
+  // Terceros ya vinculados
   const [thirds, setThirds] = useState<Third[]>([]);
 
   async function load() {
@@ -83,9 +85,13 @@ export default function EditArtist() {
       dni: null, birth_date: null, email: null, phone: null, left_at: null
     }]);
   }
-  function rmMember(idx:number) { setMembers(m => m.filter((_,i)=>i!==idx)); }
+  function rmMember(idx:number) {
+    setMembers(m => m.filter((_,i)=>i!==idx));
+  }
   function upMember(idx:number, key:keyof Member, val:any) {
-    const copy = [...members]; (copy[idx] as any)[key] = val; setMembers(copy);
+    const copy = [...members];
+    (copy[idx] as any)[key] = val;
+    setMembers(copy);
   }
 
   async function save() {
@@ -202,9 +208,11 @@ export default function EditArtist() {
         </div>
       )}
 
+      {/* Vinculación de terceros */}
       <div className="module">
         <h2>Terceros vinculados</h2>
-        <SmartPartySelect artistId={a.id} kind="third" onLinked={load}/>
+        <SmartPartySelect artistId={a.id} kind="third" onLinked={load} />
+
         {thirds.length===0 ? <small>No hay terceros vinculados.</small> : (
           <div style={{marginTop:8, display:'grid', gap:8}}>
             {thirds.map(t=>(
@@ -233,6 +241,7 @@ export default function EditArtist() {
         )}
       </div>
 
+      {/* Contratos */}
       <div className="module">
         <h2>Contratos</h2>
         <ContractsBlock kind="artist" ownerId={a.id} />
