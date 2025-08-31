@@ -1,11 +1,11 @@
 // pages/artists/[id]/edit.tsx
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import Layout from '../../../components/Layout';
 import Button from '../../../components/Button';
 import { supabase } from '../../../lib/supabaseClient';
 import ContractsBlock from '../../../components/ContractsBlock';
-import ArtistThirdsBlock from '../../../components/ArtistThirdsBlock'; // ⬅️ nuevo (sustituye SmartPartySelect + listado manual)
+import SmartPartySelect from '../../../components/SmartPartySelect';
 
 type Artist = {
   id: string;
@@ -33,33 +33,45 @@ type Member = {
   left_at: string | null;
 };
 
+type Third = {
+  id: string;
+  nick: string | null;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  logo_url: string | null;
+};
+
 export default function EditArtist() {
   const router = useRouter();
   const { id } = router.query as { id: string };
 
   const [a, setA] = useState<Artist | null>(null);
 
-  // Miembros
   const [members, setMembers] = useState<Member[]>([]);
   const [initialIds, setInitialIds] = useState<string[]>([]);
 
+  const [thirds, setThirds] = useState<Third[]>([]);
+
   async function load() {
     if (!id) return;
-
-    // Artista
-    const { data: artist, error: aErr } = await supabase.from('artists').select('*').eq('id', id).single();
-    if (aErr) { alert(aErr.message); return; }
+    const { data: artist } = await supabase.from('artists').select('*').eq('id', id).single();
     setA(artist as any);
 
-    // Miembros activos
-    const { data: m, error: mErr } = await supabase.from('artist_members').select('*')
+    const { data: m } = await supabase.from('artist_members').select('*')
       .eq('artist_id', id)
       .is('left_at', null)
       .order('created_at', { ascending:true });
-    if (mErr) { alert(mErr.message); return; }
     const ms = (m||[]) as Member[];
     setMembers(ms);
     setInitialIds(ms.map(x=>x.id));
+
+    const { data: t } = await supabase.from('third_parties').select('id, nick, name, email, phone, logo_url')
+      .eq('artist_id', id)
+      .eq('kind','third')
+      .neq('is_active', false)
+      .order('created_at', { ascending:false });
+    setThirds((t||[]) as any);
   }
   useEffect(()=>{ load(); }, [id]);
 
@@ -71,19 +83,14 @@ export default function EditArtist() {
       dni: null, birth_date: null, email: null, phone: null, left_at: null
     }]);
   }
-  function rmMember(idx:number) {
-    setMembers(m => m.filter((_,i)=>i!==idx));
-  }
+  function rmMember(idx:number) { setMembers(m => m.filter((_,i)=>i!==idx)); }
   function upMember(idx:number, key:keyof Member, val:any) {
-    const copy = [...members];
-    (copy[idx] as any)[key] = val;
-    setMembers(copy);
+    const copy = [...members]; (copy[idx] as any)[key] = val; setMembers(copy);
   }
 
   async function save() {
     if (!a) return;
     try {
-      // 1) Guarda artista
       const { error: aErr } = await supabase
         .from('artists')
         .update({
@@ -101,14 +108,10 @@ export default function EditArtist() {
         .eq('id', a.id);
       if (aErr) throw aErr;
 
-      // 2) Miembros
       const currentIds = members.filter(m=>!m.id.startsWith('tmp_')).map(m=>m.id);
       const removed = initialIds.filter(oldId => !currentIds.includes(oldId));
       for (const rid of removed) {
-        const r = await supabase
-          .from('artist_members')
-          .update({ left_at: new Date().toISOString() })
-          .eq('id', rid);
+        const r = await supabase.from('artist_members').update({ left_at: new Date().toISOString() }).eq('id', rid);
         if (r.error) throw r.error;
       }
       for (const m of members) {
@@ -154,7 +157,6 @@ export default function EditArtist() {
         </div>
       </div>
 
-      {/* Datos básicos */}
       <div className="module">
         <h2>Datos básicos</h2>
         <div className="row">
@@ -175,7 +177,6 @@ export default function EditArtist() {
         </div>
       </div>
 
-      {/* Miembros (con baja lógica) */}
       {a.is_group && (
         <div className="module">
           <h2>Miembros</h2>
@@ -201,10 +202,37 @@ export default function EditArtist() {
         </div>
       )}
 
-      {/* 🔹 Terceros vinculados: módulo unificado (buscador + crear en modal + lista con Editar/Desvincular) */}
-      <ArtistThirdsBlock artistId={a.id} />
+      <div className="module">
+        <h2>Terceros vinculados</h2>
+        <SmartPartySelect artistId={a.id} kind="third" onLinked={load}/>
+        {thirds.length===0 ? <small>No hay terceros vinculados.</small> : (
+          <div style={{marginTop:8, display:'grid', gap:8}}>
+            {thirds.map(t=>(
+              <div key={t.id} className="card" style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                <div style={{display:'flex', alignItems:'center', gap:12}}>
+                  <div style={{width:40, height:40, borderRadius:8, overflow:'hidden', background:'#f3f4f6'}}>
+                    {t.logo_url ? <img src={t.logo_url} alt={t.nick||t.name||''} style={{width:'100%',height:'100%',objectFit:'cover'}}/> : null}
+                  </div>
+                  <div style={{fontWeight:600}}>{t.nick || t.name || 'Sin nombre'}</div>
+                </div>
+                <div style={{display:'flex', gap:8}}>
+                  <Button as="a" tone="neutral" href={`/partners/thirds/${t.id}`}>Editar</Button>
+                  <Button tone="danger" onClick={async ()=>{
+                    const ok = confirm('¿Desvincular este tercero?');
+                    if (!ok) return;
+                    const { error } = await supabase.from('third_parties')
+                      .update({ artist_id: null, unlinked: true, unlinked_at: new Date().toISOString(), unlinked_from_artist: a.id })
+                      .eq('id', t.id);
+                    if (error) return alert(error.message);
+                    await load();
+                  }}>Desvincular</Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
-      {/* Contratos del artista */}
       <div className="module">
         <h2>Contratos</h2>
         <ContractsBlock kind="artist" ownerId={a.id} />
