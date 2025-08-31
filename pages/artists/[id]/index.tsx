@@ -7,6 +7,7 @@ import Layout from '../../../components/Layout';
 import Button from '../../../components/Button';
 import ContractsBlock from '../../../components/ContractsBlock';
 import PartySearchSelect from '../../../components/PartySearchSelect';
+import ArtistThirdsList from '../../components/ArtistThirdsList';
 
 type Artist = {
   id: string;
