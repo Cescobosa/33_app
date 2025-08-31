@@ -5,7 +5,7 @@ import Layout from '../../components/Layout';
 import Button from '../../components/Button';
 import { supabase } from '../../lib/supabaseClient';
 import ContractsBlock from '../../components/ContractsBlock';
-import ArtistThirdsBlock from '../../components/ArtistThirdsBlock'; // ⬅️ nuevo
+import SmartPartySelect from '../../components/SmartPartySelect';
 
 export default function NewArtist() {
   const router = useRouter();
@@ -67,13 +67,12 @@ export default function NewArtist() {
         </div>
       </div>
 
-      {/* Una vez creado, aparecen módulos de terceros y contratos */}
       {createdId && (
         <>
-          {/* 🔹 Bloque unificado: buscador sin tildes + crear en modal + vinculación automática + lista con Editar/Desvincular */}
-          <ArtistThirdsBlock artistId={createdId} />
-
-          {/* 🔹 Contratos (el formulario de alta se despliega al pulsar el botón del propio bloque) */}
+          <div className="module">
+            <h2>Terceros vinculados</h2>
+            <SmartPartySelect artistId={createdId} kind="third" onLinked={()=>{ /* aquí no hace falta refrescar nada */ }} />
+          </div>
           <div className="module">
             <h2>Contratos</h2>
             <ContractsBlock kind="artist" ownerId={createdId} />
