@@ -4,279 +4,323 @@ import { supabase } from '../lib/supabaseClient';
 import Button from './Button';
 
 type Props = {
-  /** id del artista al que queremos vincular (obligatorio para kind="third") */
-  artistId?: string;
-  /** 'third' para terceros vinculados a artistas, 'provider' para proveedores sueltos */
-  kind: 'third' | 'provider';
-  /** callback opcional tras vincular/crear (para recargar ficha) */
-  onLinked?: () => void;
+  artistId: string;                  // artista al que vamos a vincular
+  kind: 'third' | 'provider';        // tipo de ficha a buscar/crear
+  onLinked?: () => void;             // callback tras vincular
 };
 
-/** Normaliza strings (quita tildes y baja a minúsculas) para comparar/buscar */
-function norm(s: string | null | undefined): string {
-  if (!s) return '';
-  try {
-    // Navegadores modernos
-    return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-  } catch {
-    // Fallback simple
-    const from = 'ÁÀÄÂÃÅáàäâãåÉÈËÊéèëêÍÌÏÎíìïîÓÒÖÔÕóòöôõÚÙÜÛúùüûÇçÑñ';
-    const to   = 'AAAAAAaaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuCcNn';
-    return s.split('').map(ch => {
-      const idx = from.indexOf(ch);
-      return idx >= 0 ? to[idx] : ch;
-    }).join('').toLowerCase().trim();
-  }
-}
-
-type ThirdRow = {
+type ThirdLite = {
   id: string;
-  kind: 'third'|'provider';
   artist_id: string | null;
+  kind: 'third' | 'provider';
   nick: string | null;
   name: string | null;
   email: string | null;
   phone: string | null;
+  tax_id: string | null;
   logo_url: string | null;
   is_active: boolean | null;
 };
 
+// --- util acento-insensible ---
+function norm(s?: string | null) {
+  return (s ?? '')
+    .toString()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
 export default function SmartPartySelect({ artistId, kind, onLinked }: Props) {
   const [q, setQ] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState<ThirdRow[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<ThirdLite[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-  // Modal de “nuevo tercero”
-  const [showCreate, setShowCreate] = useState(false);
+  // formulario de alta inline
   const [creating, setCreating] = useState(false);
-  const [draft, setDraft] = useState({
+  const [form, setForm] = useState({
     nick: '',
     name: '',
     email: '',
     phone: '',
-    tax_id: ''
+    tax_id: '',
   });
 
-  const qn = useMemo(() => norm(q), [q]);
-  const inputRef = useRef<HTMLInputElement|null>(null);
+  // debounce de búsqueda
+  const tRef = useRef<any>(null);
+  useEffect(() => {
+    clearTimeout(tRef.current);
+    tRef.current = setTimeout(() => {
+      void doSearch(q);
+    }, 250);
+    return () => clearTimeout(tRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, kind]);
 
-  /** Buscar en BD con ilike y después afinar en cliente con normalización */
-  async function search(text: string) {
-    const value = text.trim();
-    setQ(value);
-    const nv = norm(value);
-    if (nv.length < 2) { setRows([]); return; }
-
-    setLoading(true);
+  async function doSearch(term: string) {
+    setError(null);
+    setBusy(true);
     try {
-      // Traemos un máximo de 30 candidatos por nick o name (ilike) de este kind
-      const { data, error } = await supabase
+      const base = supabase
         .from('third_parties')
-        .select('id, kind, artist_id, nick, name, email, phone, logo_url, is_active')
+        .select('id, artist_id, kind, nick, name, email, phone, tax_id, logo_url, is_active')
         .eq('kind', kind)
-        .limit(30)
-        .or(`nick.ilike.%${value}%,name.ilike.%${value}%`);
+        .neq('is_active', false)
+        .order('created_at', { ascending: false })
+        .limit(40);
 
-      if (error) throw error;
+      if (!term.trim()) {
+        const { data, error } = await base;
+        if (error) throw error;
+        setResults(data || []);
+        return;
+      }
 
-      const arr = (data || []) as ThirdRow[];
+      // 1) intento directo por ILIKE en columnas más habituales
+      const { data: byIlike, error: e1 } = await base.or(
+        [
+          `nick.ilike.%${term}%`,
+          `name.ilike.%${term}%`,
+          `email.ilike.%${term}%`,
+          `phone.ilike.%${term}%`,
+          `tax_id.ilike.%${term}%`,
+        ].join(',')
+      );
+      if (e1) throw e1;
 
-      // Filtro “fuzzy” por normalización para resolver tildes
-      const filtered = arr.filter(r => {
-        const a = norm(r.nick) || '';
-        const b = norm(r.name) || '';
-        return a.includes(nv) || b.includes(nv);
-      });
+      if (byIlike && byIlike.length > 0) {
+        setResults(byIlike);
+      } else {
+        // 2) fallback: traemos un bloque y filtramos en cliente SIN acentos
+        const { data: all, error: e2 } = await supabase
+          .from('third_parties')
+          .select('id, artist_id, kind, nick, name, email, phone, tax_id, logo_url, is_active')
+          .eq('kind', kind)
+          .neq('is_active', false)
+          .limit(250);
+        if (e2) throw e2;
 
-      setRows(filtered);
+        const n = norm(term);
+        const filtered = (all || []).filter((t) => {
+          const hay = [t.nick, t.name, t.email, t.phone, t.tax_id].some((v) => norm(v).includes(n));
+          return hay;
+        });
+        setResults(filtered);
+      }
     } catch (e: any) {
-      console.error(e);
-      setRows([]);
+      setError(e.message || 'Error buscando terceros');
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
   async function linkExisting(thirdId: string) {
-    // Vincula el tercero al artista (y lo marca como activo)
+    setBusy(true);
+    setError(null);
     try {
-      if (kind === 'third') {
-        if (!artistId) {
-          alert('Falta artistId para vincular el tercero.');
-          return;
-        }
-        const { error } = await supabase
-          .from('third_parties')
-          .update({
-            artist_id: artistId,
-            unlinked: false,
-            unlinked_at: null,
-            unlinked_from_artist: null,
-            is_active: true
-          })
-          .eq('id', thirdId);
-        if (error) throw error;
-      }
-      setQ('');
-      setRows([]);
+      const { error } = await supabase
+        .from('third_parties')
+        .update({
+          artist_id: artistId,
+          unlinked: false,
+          unlinked_at: null,
+          unlinked_from_artist: null,
+        })
+        .eq('id', thirdId);
+      if (error) throw error;
+      // refrescamos resultados y avisamos arriba
+      await doSearch(q);
       onLinked?.();
-    } catch (e:any) {
-      alert(e.message || 'No se pudo vincular el tercero');
+    } catch (e: any) {
+      setError(e.message || 'No se pudo vincular');
+    } finally {
+      setBusy(false);
     }
+  }
+
+  // Comprobación de duplicados "suave"
+  async function findPossibleDuplicate() {
+    const keys = [form.nick, form.name, form.email, form.phone, form.tax_id].map(norm).filter(Boolean);
+    if (keys.length === 0) return null;
+
+    const { data, error } = await supabase
+      .from('third_parties')
+      .select('id, artist_id, kind, nick, name, email, phone, tax_id, logo_url, is_active')
+      .eq('kind', kind)
+      .neq('is_active', false)
+      .limit(250);
+
+    if (error) throw error;
+
+    const dup = (data || []).find((t) => {
+      const pool = [t.nick, t.name, t.email, t.phone, t.tax_id].map(norm);
+      return keys.some((k) => k && pool.some((p) => p === k || (k.length > 2 && p.includes(k))));
+    });
+    return dup || null;
   }
 
   async function createAndLink() {
-    if (!draft.nick.trim() && !draft.name.trim()) {
-      alert('Pon al menos Nick o Nombre');
-      return;
-    }
+    setBusy(true);
+    setError(null);
     try {
-      setCreating(true);
+      // 0) validación mínima
+      if (!form.nick.trim() && !form.name.trim()) {
+        throw new Error('Indica al menos Nick o Nombre.');
+      }
 
-      // Comprobación blanda de duplicados (misma idea que tu índice "soft")
-      const base = (draft.nick || draft.name || '').trim();
-      const { data: dup } = await supabase
+      // 1) ¿existe uno muy parecido?
+      const dup = await findPossibleDuplicate();
+      if (dup) {
+        // si existe, lo vinculamos directamente
+        await linkExisting(dup.id);
+        setCreating(false);
+        return;
+      }
+
+      // 2) creamos
+      const { data: ins, error: insErr } = await supabase
         .from('third_parties')
-        .select('id, nick, name')
-        .eq('kind', kind)
-        .limit(1)
-        .or(`nick.ilike.%${base}%,name.ilike.%${base}%`);
-      if ((dup || []).length > 0) {
-        // Ya existe uno muy parecido -> ofrecérselo directamente
-        const ya = dup![0];
-        const ok = confirm(`Ya existe “${ya.nick || ya.name}”. ¿Vincular ese?`);
-        if (ok) {
-          await linkExisting(ya.id);
-          setShowCreate(false);
-          setDraft({ nick:'', name:'', email:'', phone:'', tax_id:'' });
-          return;
-        }
-      }
+        .insert({
+          kind,
+          artist_id: artistId,
+          nick: form.nick || null,
+          name: form.name || null,
+          email: form.email || null,
+          phone: form.phone || null,
+          tax_id: form.tax_id || null,
+          is_active: true,
+        })
+        .select('id')
+        .single();
 
-      // Insert del tercero (si hay artistId y kind='third', lo dejamos ya vinculado)
-      const payload: any = {
-        kind,
-        nick: draft.nick || null,
-        name: draft.name || null,
-        email: draft.email || null,
-        phone: draft.phone || null,
-        tax_id: draft.tax_id || null,
-        is_active: true,
-      };
-      if (kind === 'third' && artistId) payload.artist_id = artistId;
+      if (insErr) throw insErr;
 
-      const ins = await supabase.from('third_parties').insert(payload).select('id').single();
-      if (ins.error) throw ins.error;
-
-      // Si es provider no lo vinculamos a un artista
-      if (kind === 'third' && artistId && !payload.artist_id) {
-        await linkExisting(ins.data.id);
-      }
-
-      setShowCreate(false);
-      setDraft({ nick:'', name:'', email:'', phone:'', tax_id:'' });
-      setQ('');
-      setRows([]);
-      onLinked?.();
-    } catch (e:any) {
-      alert(e.message || 'No se pudo crear el tercero');
-    } finally {
+      // 3) listo
       setCreating(false);
+      setForm({ nick: '', name: '', email: '', phone: '', tax_id: '' });
+      setQ('');
+      await doSearch('');
+      onLinked?.();
+    } catch (e: any) {
+      setError(e.message || 'No se pudo crear el tercero');
+    } finally {
+      setBusy(false);
     }
   }
 
-  useEffect(() => {
-    // Al montar, autofocus si procede
-    if (inputRef.current) inputRef.current.focus();
-  }, []);
+  const showCreateButton = useMemo(
+    () => q.trim().length > 1 && results.length === 0,
+    [q, results.length]
+  );
 
   return (
     <div>
       <input
-        ref={inputRef}
-        placeholder="Busca por nick o nombre…"
+        placeholder="Busca por nick, nombre, CIF/NIF, email o teléfono…"
         value={q}
-        onChange={(e)=>search(e.target.value)}
+        onChange={(e) => setQ(e.target.value)}
       />
 
-      {/* Resultados */}
-      {loading ? <div style={{marginTop:8}}>Buscando…</div> : null}
+      {error ? (
+        <div style={{ color: '#b91c1c', marginTop: 6 }}>{error}</div>
+      ) : null}
 
-      {!loading && qn.length >= 2 && rows.length > 0 && (
-        <div style={{marginTop:8, display:'grid', gap:8}}>
-          {rows.map(r=>(
-            <div key={r.id} className="card" style={{display:'flex', alignItems:'center', justifyContent:'space-between'}}>
-              <div style={{display:'flex', alignItems:'center', gap:12}}>
-                <div style={{width:36, height:36, borderRadius:8, overflow:'hidden', background:'#f3f4f6'}}>
-                  {r.logo_url ? <img src={r.logo_url} alt={r.nick||r.name||''} style={{width:'100%',height:'100%',objectFit:'cover'}}/> : null}
+      {/* Lista de resultados */}
+      <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+        {busy && <small>Buscando…</small>}
+        {!busy && results.length === 0 && <small>No hay resultados.</small>}
+
+        {results.map((t) => {
+          const display = t.nick || t.name || 'Sin nombre';
+          const yaVinculado = t.artist_id === artistId;
+          return (
+            <div key={t.id} className="card" style={{ padding: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, overflow: 'hidden', background: '#f3f4f6' }}>
+                  {t.logo_url ? (
+                    <img src={t.logo_url} alt={display} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : null}
                 </div>
                 <div>
-                  <div style={{fontWeight:600}}>{r.nick || r.name || 'Sin nombre'}</div>
-                  <div style={{fontSize:12, color:'#6b7280'}}>{r.email || r.phone || ''}</div>
+                  <div style={{ fontWeight: 600 }}>{display}</div>
+                  <div style={{ color: '#6b7280', fontSize: 12 }}>
+                    {t.email || '—'} · {t.phone || '—'} {t.tax_id ? `· ${t.tax_id}` : ''}
+                  </div>
                 </div>
               </div>
-              <div>
-                <Button onClick={()=>linkExisting(r.id)}>Vincular</Button>
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                {yaVinculado ? (
+                  <Button tone="neutral" disabled>Ya vinculado</Button>
+                ) : (
+                  <Button onClick={() => linkExisting(t.id)}>Vincular</Button>
+                )}
+                <Button as="a" tone="neutral" href={`/partners/thirds/${t.id}`}>Ver ficha</Button>
               </div>
             </div>
-          ))}
+          );
+        })}
+      </div>
+
+      {/* Botón de crear si no hay resultados claros */}
+      {showCreateButton && !creating && (
+        <div style={{ marginTop: 10 }}>
+          <Button tone="danger" onClick={() => setCreating(true)}>+ Crear nuevo tercero</Button>
         </div>
       )}
 
-      {/* Si no hay resultados y hay texto => opción de crear */}
-      {!loading && qn.length >= 2 && rows.length === 0 && (
-        <div style={{marginTop:8}}>
-          <small>No hay resultados.</small>
-          <div style={{marginTop:8}}>
-            <Button tone="danger" onClick={()=>{ setShowCreate(true); setDraft({nick:q, name:'', email:'', phone:'', tax_id:''}); }}>
-              + Crear nuevo tercero
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Modal inline para crear tercero (ligero y sin dependencias) */}
-      {showCreate && (
-        <div
-          style={{
-            position:'fixed', inset:0, background:'rgba(0,0,0,.35)',
-            display:'flex', alignItems:'center', justifyContent:'center', zIndex:50
-          }}
-          onClick={()=>setShowCreate(false)}
-        >
-          <div
-            className="module"
-            style={{width:'min(720px, 94vw)', maxWidth:720, background:'#fff'}}
-            onClick={(e)=>e.stopPropagation()}
-          >
-            <h3 style={{marginTop:0}}>Nuevo tercero</h3>
-            <div className="row">
-              <div style={{flex:'1 1 240px'}}><label>Nick</label>
-                <input value={draft.nick} onChange={e=>setDraft({...draft, nick:e.target.value})}/>
-              </div>
-              <div style={{flex:'1 1 320px'}}><label>Nombre / Empresa</label>
-                <input value={draft.name} onChange={e=>setDraft({...draft, name:e.target.value})}/>
-              </div>
-              <div style={{flex:'0 0 220px'}}><label>NIF/CIF</label>
-                <input value={draft.tax_id} onChange={e=>setDraft({...draft, tax_id:e.target.value})}/>
-              </div>
+      {/* Formulario inline de alta */}
+      {creating && (
+        <div className="card" style={{ marginTop: 10, padding: 12 }}>
+          <h3 style={{ marginTop: 0 }}>Nuevo tercero</h3>
+          <div className="row">
+            <div style={{ flex: '1 1 220px' }}>
+              <label>Nick</label>
+              <input
+                value={form.nick}
+                onChange={(e) => setForm({ ...form, nick: e.target.value })}
+              />
             </div>
-            <div className="row">
-              <div style={{flex:'1 1 280px'}}><label>Email</label>
-                <input value={draft.email} onChange={e=>setDraft({...draft, email:e.target.value})}/>
-              </div>
-              <div style={{flex:'0 0 200px'}}><label>Teléfono</label>
-                <input value={draft.phone} onChange={e=>setDraft({...draft, phone:e.target.value})}/>
-              </div>
+            <div style={{ flex: '1 1 280px' }}>
+              <label>Nombre / Empresa</label>
+              <input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
             </div>
-
-            <div style={{display:'flex', gap:8, marginTop:10}}>
-              <Button onClick={createAndLink} disabled={creating}>
-                Guardar{kind==='third' && artistId ? ' y vincular' : ''}
-              </Button>
-              <Button tone="neutral" onClick={()=>setShowCreate(false)}>Cancelar</Button>
+            <div style={{ flex: '0 0 220px' }}>
+              <label>Email</label>
+              <input
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+              />
+            </div>
+            <div style={{ flex: '0 0 180px' }}>
+              <label>Teléfono</label>
+              <input
+                value={form.phone}
+                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              />
+            </div>
+            <div style={{ flex: '0 0 180px' }}>
+              <label>NIF/CIF</label>
+              <input
+                value={form.tax_id}
+                onChange={(e) => setForm({ ...form, tax_id: e.target.value })}
+              />
             </div>
           </div>
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <Button onClick={createAndLink} disabled={busy}>Guardar y vincular</Button>
+            <Button tone="neutral" onClick={() => setCreating(false)} disabled={busy}>Cancelar</Button>
+          </div>
+
+          {error ? (
+            <div style={{ color: '#b91c1c', marginTop: 6 }}>{error}</div>
+          ) : null}
         </div>
       )}
     </div>
