@@ -1,62 +1,108 @@
-// pages/partners/thirds/index.tsx
+// pages/partners/providers/index.tsx
 import { useEffect, useMemo, useState } from 'react';
-import Layout from '../../../components/Layout';
-import { supabase } from '../../../lib/supabaseClient';
-import { matches } from '../../../lib/search';
 import Link from 'next/link';
+import Layout from '../../../components/Layout';
 import Button from '../../../components/Button';
+import { supabase } from '../../../lib/supabaseClient';
 
-type Row = {
+type ProviderRow = {
   id: string;
-  kind: 'third'|'provider';
+  kind: 'provider' | 'third';
   nick: string | null;
   name: string | null;
   logo_url: string | null;
   is_active: boolean | null;
 };
 
-export default function ThirdsIndex() {
-  const [rows, setRows] = useState<Row[]>([]);
+export default function ProvidersIndex() {
+  const [rows, setRows] = useState<ProviderRow[]>([]);
   const [q, setQ] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
 
   async function load() {
-    const { data } = await supabase
-      .from('third_parties')
-      .select('id, kind, nick, name, logo_url, is_active')
-      .eq('kind','provider')
-      .neq('is_active', false)              -- no mostrar eliminados
-      .order('created_at', { ascending:false });
-    setRows((data||[]) as any);
+    setLoading(true);
+    setErr(null);
+    // 👇 OJO: toda la cadena dentro de los paréntesis para que el await
+    // aplique a la consulta completa (evitamos el error de ASI).
+    const { data, error } = await (
+      supabase
+        .from('third_parties')
+        .select('id, kind, nick, name, logo_url, is_active')
+        .eq('kind', 'provider')
+        .order('nick', { ascending: true })
+    );
+    if (error) {
+      setErr(error.message);
+    } else {
+      setRows((data || []) as ProviderRow[]);
+    }
+    setLoading(false);
   }
-  useEffect(()=>{ load(); }, []);
 
-  const filtered = useMemo(()=> rows.filter(
-    r => matches(r.nick, q) || matches(r.name, q)
-  ), [rows, q]);
+  useEffect(() => { load(); }, []);
+
+  // Búsqueda local sin tildes (por si no quieres hacer roundtrip al servidor).
+  function norm(s: string) {
+    return s
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .toLowerCase();
+  }
+
+  const filtered = useMemo(() => {
+    const nq = norm(q);
+    if (!nq) return rows;
+    return rows.filter(r => {
+      const a = norm(r.nick || '');
+      const b = norm(r.name || '');
+      return a.includes(nq) || b.includes(nq);
+    });
+  }, [q, rows]);
 
   return (
     <Layout>
-      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
-        <input placeholder="Buscar tercero…" value={q} onChange={e=>setQ(e.target.value)} />
-        <div>
-          {/* aquí no se crean terceros “sueltos”; se crean desde la ficha de artista */}
-        </div>
+      <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
+        <h1 style={{margin:0}}>Proveedores</h1>
+        <Button as="a" href="/partners/providers/new">+ Añadir proveedor</Button>
       </div>
 
-      <div className="module">
-        <h2 style={{marginTop:0}}>Terceros</h2>
-        <div style={{display:'grid', gap:12}}>
-          {filtered.map(t=>(
-            <Link key={t.id} href={`/partners/thirds/${t.id}`} className="card" style={{display:'flex',alignItems:'center',gap:12}}>
-              <div style={{width:56,height:56,borderRadius:12,overflow:'hidden',background:'#f3f4f6'}}>
-                {t.logo_url ? <img src={t.logo_url} alt={t.nick||t.name||''} style={{width:'100%',height:'100%',objectFit:'cover'}}/> : null}
-              </div>
-              <div style={{fontWeight:600}}>{t.nick || t.name || 'Sin nombre'}</div>
-            </Link>
-          ))}
-          {filtered.length===0 ? <small>No hay resultados.</small> : null}
+      <input
+        placeholder="Buscar proveedor…"
+        value={q}
+        onChange={e => setQ(e.target.value)}
+        className="input"
+        style={{width:'100%', marginBottom:12}}
+      />
+
+      {loading && <div className="module">Cargando…</div>}
+      {err && <div className="module" style={{color:'#d42842'}}>Error: {err}</div>}
+
+      {!loading && !err && (
+        <div className="module">
+          {filtered.length === 0 ? (
+            <small>No hay proveedores.</small>
+          ) : (
+            <ul style={{listStyle:'none', padding:0, margin:0}}>
+              {filtered.map(p => (
+                <li key={p.id} style={{display:'flex', alignItems:'center', gap:12, padding:'10px 0', borderTop:'1px solid #e5e7eb'}}>
+                  <div style={{width:48, height:48, borderRadius:10, overflow:'hidden', background:'#f3f4f6', flex:'0 0 48px'}}>
+                    {p.logo_url && <img src={p.logo_url} alt={p.nick || p.name || 'Proveedor'} style={{width:'100%', height:'100%', objectFit:'cover'}}/>}
+                  </div>
+                  <div style={{flex:'1 1 auto'}}>
+                    <Link href={`/partners/providers/${p.id}`} style={{fontWeight:600}}>
+                      {p.nick || p.name || '(Sin nombre)'}
+                    </Link>
+                    {p.is_active === false && (
+                      <span style={{marginLeft:8, fontSize:12, color:'#6b7280'}}>(inactivo)</span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-      </div>
+      )}
     </Layout>
   );
 }
