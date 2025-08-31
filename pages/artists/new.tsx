@@ -71,7 +71,7 @@ export default function NewArtist() {
         <>
           <div className="module">
             <h2>Terceros vinculados</h2>
-            <SmartPartySelect artistId={createdId} kind="third" onLinked={()=>{ /* aquí no hace falta refrescar nada */ }} />
+            <SmartPartySelect artistId={createdId} kind="third" />
           </div>
           <div className="module">
             <h2>Contratos</h2>
