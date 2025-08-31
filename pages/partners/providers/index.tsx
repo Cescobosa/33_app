@@ -23,8 +23,6 @@ export default function ProvidersIndex() {
   async function load() {
     setLoading(true);
     setErr(null);
-    // 👇 OJO: toda la cadena dentro de los paréntesis para que el await
-    // aplique a la consulta completa (evitamos el error de ASI).
     const { data, error } = await (
       supabase
         .from('third_parties')
@@ -42,11 +40,12 @@ export default function ProvidersIndex() {
 
   useEffect(() => { load(); }, []);
 
-  // Búsqueda local sin tildes (por si no quieres hacer roundtrip al servidor).
+  // ↓↓↓ Búsqueda local sin tildes (compatible ES5)
   function norm(s: string) {
+    // NFD separa letras y acentos; el rango \u0300-\u036f son diacríticos combinantes
     return s
       .normalize('NFD')
-      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[\u0300-\u036f]/g, '')
       .toLowerCase();
   }
 
